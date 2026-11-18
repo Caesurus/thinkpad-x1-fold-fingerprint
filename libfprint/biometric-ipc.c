@@ -248,6 +248,10 @@ int fold_bio_next(struct fold_bio_session *s, int cancel_fd, enum fold_bio_event
         if (reply.op != FOLD_ENROLL || !s->stage) goto invalid;
         fold_bio_close(s);
         break;
+    case FOLD_DUPLICATE:
+        if (reply.op != FOLD_ENROLL) goto invalid;
+        fold_bio_close(s);
+        break;
     case FOLD_MATCH:
     case FOLD_NO_MATCH:
         if (reply.op != FOLD_VERIFY) goto invalid;

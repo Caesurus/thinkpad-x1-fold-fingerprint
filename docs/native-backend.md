@@ -21,7 +21,7 @@ make check
 | Secure session and authenticated commands | Full native exchange, two commands and close tested against an independent software peer | Physical acceptance of this profile, retrieval of an authorized Fold pairing and a subsequent cold reconnect remain outstanding. |
 | Frame capture | Native acquisition, encrypted event queue and finish tested against a software peer | Validate the enrollment and verification capture parameters on the Fold. Frame-ready establishes that a sample is available to the next biometric operation. |
 | Verify an existing enrollment | Native worker and scoped on-sensor match implemented | Software peer tests cover a match, rejection and identity mismatches. Validate the quality policy, record layout and results against a physical Fold. |
-| Enrollment | OEM worker only | Trace sample acceptance, multi-touch commit and duplicate detection. |
+| Enrollment | Native multi-touch acquisition, duplicate checks, commit and identity readback | Tested against an independent software reader with existing records and an empty directory. The Fold's duplicate-check behavior, capture cadence and actual write/readback need physical validation. |
 | Record query and individual deletion | Native lookup, template deletion and readback implemented | Software peer tests cover deletion with another enrollment present, an absent print, ambiguous records and inconsistent readback. Physical deletion needs a separate disposable enrollment. |
 | Firmware, configuration, diagnostics | Public firmware query only | The Fold DLL carries a signed main firmware update older than the measured build 3654703. Package applicability, update and recovery are separate from the authentication path. No native update was attempted. |
 
@@ -46,15 +46,55 @@ The adapter and HID DLL meet at Windows device control `0x442058`. In the HID di
 
 The same HID vtable contains enrollment create (0x11d20), update (0x120b0), commit (0x11800), discard (0x11f90) and duplicate check (0x116e0). Capture and enrollment are separate state machines. Receiving an image or an accepted enrollment sample does not establish a successful identity check.
 
-### Native verification worker
+### What runs during a native fingerprint request
 
-`build/native-worker` serves one verification or individual deletion request from the libfprint plugin through its existing Unix socket protocol. It accepts the already-open reader descriptor and the requested print identity. It runs as an unprivileged Linux process and links GLib/GIO and OpenSSL libcrypto. The build uses this repository's C sources and installed development packages. The worker expects the service manager to supply three protected files in `CREDENTIALS_DIRECTORY` named `sensor.cert`, `host.cert` and `host-key.pem`. The running release's ability to reconnect with its own credential storage does not supply those files. The installer selects the tested OEM-backed worker.
+```mermaid
+flowchart TD
+  KDE["KDE screen locker"] --> PAM["PAM and pam_fprintd"]
+  PAM -->|D-Bus| F["fprintd"]
+  F -->|libfprint TOD| P["libx1fold-hid.so"]
+  P -->|"Unix socket: request, print identity, open hidraw FD"| W["native-worker (Linux ELF)"]
+  L["libx1fold-native.a"] -. statically linked .-> W
+  C["systemd pairing credentials"] --> W
+  W -->|"encrypted commands over USB HID interface 04"| R["Fold fingerprint reader"]
+  R -->|"on-sensor enroll or match result"| W
+```
+
+`build/native-worker` serves one enrollment, verification or individual deletion request from the libfprint plugin through its existing Unix socket protocol. It accepts the already-open reader descriptor and the requested print identity. It runs as an unprivileged Linux process and links GLib/GIO and OpenSSL libcrypto. The build uses this repository's C sources and installed development packages. The worker expects the service manager to supply three protected files in `CREDENTIALS_DIRECTORY` named `sensor.cert`, `host.cert` and `host-key.pem`. The running release's ability to reconnect with its own credential storage does not supply those files. The installer selects the tested OEM-backed worker.
 
 The native code checks the serial inside the authenticated session, lists template IDs with DB2 command `0x9f` and reads their enrollment metadata with `0xa1`. The Fold HID DLL constructs these commands at RVAs 0xaebec and 0xaf239. The print stores a WinBio GUID and finger number. The sensor uses a separate 16-byte template ID. The worker requires one record binding all three, captures a fresh frame and addresses only that template in match command `0x99`. The Fold DLL builds the template-list form at 0xa5011–0xa50c5, allocates a 1602-byte reply and checks the 36-byte match-statistics length at 0xa5290. The C worker checks the authenticated reply's template ID, embedded template ID, GUID, finger and positive match indication before reporting a match. The sensor keeps the biometric comparison on board.
 
 The Fold DLL's image-quality check at RVA 0x50d40 reads a configurable threshold, defaults to 50 and permits thresholds from 30 to 99. The native prototype uses the default and requires a well-formed quality report from command `0x9d` with selector `0x10000`. The selector and WinBio enrollment metadata layout are based on the related Tudor protocol. Their applicability to the Fold's firmware and any device-specific threshold still require physical validation. The software peer checks the quality boundary, missing or conflicting identities, malformed replies, rejection and a positive result. The production fprintd-to-worker-to-reader transaction has yet to be demonstrated with native credentials.
 
 For deletion, the Fold v153 HID routine at RVA 0xafca0 constructs command `0xa3`, writes the type at byte 1, copies the 16-byte object ID to byte 5 and reads a 4-byte reply. The native worker selects one template whose only enrollment payload matches the requested GUID and finger. It checks the authenticated serial first. It reports success after a positive deletion count and a fresh directory listing containing exactly the other template IDs. A fully read directory with the requested print already absent also completes successfully, so a caller can retry after a lost reply. An ambiguous record or shared template stops the operation before the write.
+
+### How a new enrollment reaches fprintd
+
+```mermaid
+sequenceDiagram
+  participant F as libfprint plugin
+  participant W as Native worker
+  participant R as Paired reader
+  F->>W: New GUID, serial, finger, device FD
+  W->>R: Check serial and current enrollments
+  W->>R: Start temporary enrollment
+  loop Until the sensor reports 100 percent
+    W->>R: Capture a fresh finger-down and frame
+    opt Existing template IDs
+      W->>R: Check this sample against those IDs
+    end
+    W->>R: Add sample and read progress
+    W-->>F: Accepted stage or retry
+  end
+  W->>R: Commit template ID, GUID and finger
+  W->>R: Finish and read back directory and identity
+  W->>R: Close authenticated session
+  W-->>F: Enrollment completed
+```
+
+The Fold HID DLL constructs enrollment command `0x96` at RVAs 0xa3c28, 0xa417f, 0xb04af and 0xa4796 for subcommands 1 through 4 respectively. The add-image routine requests 82 bytes and checks for 60 bytes of statistics at RVA 0xa43cc. The update callback conditionally calls authentication slot 0x110 at 0x12181–0x12188 before adding the sample. The duplicate callback at 0x116e0 reads the cached result. The native implementation checks each sample against the enrolled template IDs and requires an explicit matcher rejection to continue. How the Fold handles this check within a live enrollment still needs testing.
+
+At 100 percent the worker requires a successful final status and a new template ID. It commits the 16-byte ID, the 76-byte WinBio GUID identity and the one-byte finger number. An accepted start is followed by finish on success, rejected samples that terminate the transaction, or cancellation, as long as the connection still works. After commit, native code reads back the exact identity and checks that the directory gained only that template. If communication fails after the commit, sensor storage may already contain the record. The worker reports an error if it cannot confirm the result.
 
 ## Certificate check
 

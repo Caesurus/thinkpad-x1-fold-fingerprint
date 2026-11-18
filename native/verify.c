@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
-#include "verify.h"
+#include "records.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -261,18 +261,29 @@ check_reader (X1FoldSession *s, const struct fold_bio_identity *print, gint64 de
   return TRUE;
 }
 
+GBytes *
+x1fold_enrollment_directory (X1FoldSession *s, const struct fold_bio_identity *print,
+                             guint8 tuid[16], gboolean *found, gint64 deadline,
+                             GCancellable *cancel, GError **error)
+{
+  if (!check_reader (s, print, deadline, cancel, error))
+    return NULL;
+  g_autoptr(GBytes) list = list_templates (s, deadline, cancel, error);
+  if (!list || !resolve_print (s, print, list, FALSE, tuid, found, deadline, cancel, error))
+    return NULL;
+  return g_steal_pointer (&list);
+}
+
 gboolean
 x1fold_verify_print (X1FoldSession *s, const struct fold_bio_identity *print,
                      gint64 deadline, GCancellable *cancel, void (*ready) (gpointer),
                      gpointer user_data, gboolean *matched, GError **error)
 {
   *matched = FALSE;
-  if (!check_reader (s, print, deadline, cancel, error))
-    return FALSE;
-  g_autoptr(GBytes) list = list_templates (s, deadline, cancel, error);
   guint8 tuid[16];
   gboolean found, acceptable;
-  if (!list || !resolve_print (s, print, list, FALSE, tuid, &found, deadline, cancel, error))
+  g_autoptr(GBytes) list = x1fold_enrollment_directory (s, print, tuid, &found, deadline, cancel, error);
+  if (!list)
     return FALSE;
   if (!found)
     {
@@ -311,17 +322,24 @@ x1fold_delete_print (X1FoldSession *s, const struct fold_bio_identity *print, gi
   g_autoptr(GBytes) after = list_templates (s, deadline, cancel, error);
   if (!after)
     return FALSE;
-  gsize before_len, after_len, pos = 0;
-  const guint8 *old = g_bytes_get_data (before, &before_len);
-  const guint8 *remaining = g_bytes_get_data (after, &after_len);
-  if (before_len - 16 != after_len)
-    return invalid (error, "Unexpected template count after deletion");
-  for (gsize i = 0; i < before_len; i += 16)
-    if (memcmp (old + i, target, 16))
+  return x1fold_directory_delta (before, after, target) ||
+         invalid (error, "Unexpected reader directory after deletion");
+}
+
+gboolean
+x1fold_directory_delta (GBytes *larger, GBytes *smaller, const guint8 target[16])
+{
+  gsize large_len, small_len, pos = 0;
+  const guint8 *large = g_bytes_get_data (larger, &large_len);
+  const guint8 *small = g_bytes_get_data (smaller, &small_len);
+  if (large_len != small_len + 16)
+    return FALSE;
+  for (gsize i = 0; i < large_len; i += 16)
+    if (memcmp (large + i, target, 16))
       {
-        if (memcmp (old + i, remaining + pos, 16))
-          return invalid (error, "Another template changed during deletion");
+        if (pos >= small_len || memcmp (large + i, small + pos, 16))
+          return FALSE;
         pos += 16;
       }
-  return TRUE;
+  return pos == small_len;
 }

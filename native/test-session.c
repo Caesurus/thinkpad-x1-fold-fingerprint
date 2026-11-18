@@ -2,7 +2,7 @@
 /* The test supplies a synthetic sensor trust decision, idle feature status
  * and a packet-socket bridge for event-listener ioctls. It uses the production
  * transport for the full handshake, encrypted commands and HID notification reads. */
-#include "verify.h"
+#include "enroll.h"
 #include <stdarg.h>
 #include <linux/hidraw.h>
 #include <sys/ioctl.h>
@@ -120,6 +120,57 @@ test_verify (X1FoldSession *session, const char *mode, gint64 deadline)
   g_assert_cmpint (matched, ==, g_str_equal (mode, "verify-match"));
 }
 
+struct progress {
+  const char *mode;
+  guint previous, accepted, retries;
+};
+
+static gboolean
+sample_report (guint percent, gboolean retry, gpointer data)
+{
+  struct progress *p = data;
+  if (retry)
+    {
+      g_assert_cmpuint (percent, ==, p->previous);
+      p->retries++;
+    }
+  else
+    {
+      g_assert_cmpuint (percent, >, p->previous);
+      p->accepted++;
+    }
+  p->previous = percent;
+  return !g_str_equal (p->mode, "enroll-client-cancel");
+}
+
+static void
+test_enroll (X1FoldSession *session, const char *mode, gint64 deadline)
+{
+  const struct fold_bio_identity print = {.guid = {0xb1}, .serial = {1,2,3,4,5,6}, .finger = 2};
+  struct progress p = {.mode = mode};
+  g_autoptr(GError) error = NULL;
+  gboolean ok = x1fold_enroll_print (session, &print, deadline, NULL, sample_report, &p, &error);
+  if (g_str_equal (mode, "enroll-multiple") || g_str_equal (mode, "enroll-empty"))
+    {
+      g_assert_no_error (error);
+      g_assert_true (ok);
+      g_assert_cmpuint (p.accepted, ==, 2);
+      g_assert_cmpuint (p.retries, ==, 1);
+      g_assert_cmpuint (p.previous, ==, 100);
+      return;
+    }
+  g_assert_false (ok);
+  if (g_str_equal (mode, "enroll-duplicate") || g_str_equal (mode, "enroll-existing-identity"))
+    g_assert_error (error, G_IO_ERROR, G_IO_ERROR_EXISTS);
+  else if (g_str_equal (mode, "enroll-client-cancel"))
+    g_assert_error (error, G_IO_ERROR, G_IO_ERROR_CANCELLED);
+  else if (g_str_equal (mode, "enroll-commit-denied") || g_str_equal (mode, "enroll-finish-denied") ||
+           g_str_equal (mode, "enroll-start-denied"))
+    g_assert_error (error, G_IO_ERROR, G_IO_ERROR_FAILED);
+  else
+    g_assert_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -182,6 +233,8 @@ main (int argc, char **argv)
     test_capture (session, mode, deadline);
   if (g_str_has_prefix (mode, "verify-"))
     test_verify (session, mode, deadline);
+  if (g_str_has_prefix (mode, "enroll-"))
+    test_enroll (session, mode, deadline);
   if (g_str_has_prefix (mode, "delete-"))
     {
       const struct fold_bio_identity print = {.guid = {0xb1}, .serial = {1,2,3,4,5,6}, .finger = 2};

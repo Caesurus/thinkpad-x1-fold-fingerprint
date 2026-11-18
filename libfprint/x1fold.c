@@ -219,7 +219,9 @@ transaction_event (gint fd, GIOCondition condition, gpointer data)
     }
 
   clear_transaction (self);
-  if (event == FOLD_ENROLLED)
+  if (event == FOLD_DUPLICATE)
+    fpi_device_enroll_complete (device, NULL, fpi_device_error_new (FP_DEVICE_ERROR_DATA_DUPLICATE));
+  else if (event == FOLD_ENROLLED)
     {
       FpPrint *print;
       GError *error = NULL;

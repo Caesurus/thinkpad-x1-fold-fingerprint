@@ -105,6 +105,18 @@ int main(void) {
     assert(!fold_bio_next(&s, -1, &event) && event == FOLD_NO_MATCH && s.socket == -1);
     close(peer);
 
+    s = session(&peer, FOLD_ENROLL);
+    reply = s.request;
+    reply.event = FOLD_DUPLICATE;
+    assert(write(peer, &reply, sizeof reply) == sizeof reply);
+    assert(!fold_bio_next(&s, -1, &event) && event == FOLD_DUPLICATE && s.socket == -1);
+    close(peer);
+
+    s = session(&peer, FOLD_VERIFY);
+    reply = s.request;
+    reply.event = FOLD_DUPLICATE;
+    reject_reply(&s, peer, reply);
+
     s = session(&peer, FOLD_DELETE);
     reply = s.request;
     reply.event = FOLD_DELETED;

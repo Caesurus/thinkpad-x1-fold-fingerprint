@@ -153,6 +153,67 @@ def print_operation(sock, keys, mode):
     def listing(ids):
         return struct.pack("<HH", 0, len(ids)) + b"".join(ids)
 
+    if mode.startswith("enroll-"):
+        old = b"A" * 16
+        before = [] if mode == "enroll-empty" else [old]
+
+        def directory(ids):
+            exchange(object_cmd(0x9f, 2, bytes([255]) * 16), listing(ids))
+            for template in sorted(ids):
+                payload = child if template == tuid else b"R" * 16
+                exchange(object_cmd(0x9f, 3, template), listing([payload]))
+                target = template == tuid or mode == "enroll-existing-identity"
+                data = tags(template=template, finger=2 if target else 3)
+                exchange(object_cmd(0xa1, 3, payload), struct.pack("<II", 0, len(data)) + data)
+
+        directory(before)
+        if mode == "enroll-existing-identity":
+            return seq
+        start_reply = {"enroll-short-start": bytes(2), "enroll-start-denied": struct.pack("<H", 0x403)}
+        exchange(struct.pack("<BIII", 0x96, 1, 0, 0), start_reply.get(mode, bytes(6)))
+        finish = struct.pack("<BI", 0x96, 4)
+        if mode == "enroll-short-start":
+            exchange(finish, bytes(2))
+            return seq
+        if mode == "enroll-start-denied":
+            return seq
+        for pct, reject in [(35, 0), (35, 1), (100, 0)]:
+            seq = capture(sock, keys, "capture-enroll", seq)
+            if before:
+                result = struct.pack("<H", 0x509)
+                if mode == "enroll-duplicate":
+                    result = bytes(2) + old + struct.pack("<IIII", 36, 0, 0, 100) + bytes(32)
+                if mode == "enroll-missing-candidate":
+                    result = struct.pack("<H", 0x683)
+                exchange(struct.pack("<BIII", 0x99, 1, len(before) * 16, 0) + b"".join(before), result)
+                if mode in ("enroll-duplicate", "enroll-missing-candidate"):
+                    exchange(finish, bytes(2))
+                    return seq
+            stats = bytearray(60)
+            struct.pack_into("<H", stats, 2, 101 if mode == "enroll-invalid-progress" else pct)
+            struct.pack_into("<I", stats, 28, reject)
+            if mode == "enroll-final-error" and pct == 100:
+                struct.pack_into("<I", stats, 48, 1)
+            new_id = old if mode == "enroll-collision" else tuid
+            reply = bytes(2) + new_id + struct.pack("<I", len(stats)) + stats
+            exchange(struct.pack("<BI", 0x96, 2), reply)
+            if (mode in ("enroll-invalid-progress", "enroll-client-cancel") or
+                    (pct == 100 and mode in ("enroll-collision", "enroll-final-error"))):
+                exchange(finish, bytes(2))
+                return seq
+        subject = struct.pack("<I16s56x", 2, guid)
+        metadata = (struct.pack("<HI16s", 0, 16, tuid) + struct.pack("<HI76s", 1, 76, subject)
+                    + struct.pack("<HIB", 2, 1, 2))
+        denial = struct.pack("<H", 0x403)
+        exchange(struct.pack("<BIII", 0x96, 3, 0, len(metadata)) + metadata,
+                 denial if mode == "enroll-commit-denied" else bytes(2))
+        exchange(finish, denial if mode == "enroll-finish-denied" else bytes(2))
+        if mode not in ("enroll-commit-denied", "enroll-finish-denied"):
+            exchange(b"\x01", version)
+            after = [tuid] if mode == "enroll-lost-other" else before + [tuid]
+            directory(before if mode == "enroll-missing-readback" else after)
+        return seq
+
     if mode.startswith("delete-"):
         other = b"A" * 16
         directory = object_cmd(0x9f, 2, b"\xff" * 16)
@@ -256,7 +317,7 @@ def reader(sock, mode):
     if mode.startswith("handshake-"):
         return
     start = capture(sock, keys, mode) if mode.startswith("capture-") else 1
-    if mode.startswith(("verify-", "delete-")):
+    if mode.startswith(("verify-", "delete-", "enroll-")):
         start = print_operation(sock, keys, mode)
     previous = None
     for i in [0, 1]:
@@ -302,7 +363,12 @@ if __name__ == "__main__":
                  "verify-malformed-dupe", "verify-malformed-truncated", "verify-low-quality",
                  "verify-malformed-metric", "delete-one", "delete-absent", "delete-shared",
                  "delete-ambiguous", "delete-duplicate-id", "delete-wrong-serial", "delete-zero-count",
-                 "delete-still-present", "delete-wrong-survivor", "delete-last")
+                 "delete-still-present", "delete-wrong-survivor", "delete-last",
+                 "enroll-multiple", "enroll-empty", "enroll-existing-identity", "enroll-duplicate",
+                 "enroll-missing-candidate", "enroll-invalid-progress", "enroll-final-error",
+                 "enroll-collision", "enroll-client-cancel", "enroll-commit-denied",
+                 "enroll-finish-denied", "enroll-missing-readback", "enroll-lost-other",
+                 "enroll-short-start", "enroll-start-denied")
     for case in cases:
         run(sys.argv[1], case)
     print(f"{len(cases)} native session and biometric scenarios passed")

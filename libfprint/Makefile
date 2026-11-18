@@ -70,7 +70,10 @@ $(BUILD_DIR)/test-handshake: ../native/test-handshake.c $(BUILD_DIR)/libx1fold-n
 $(BUILD_DIR)/credentials.o: ../native/credentials.c ../native/credentials.h ../native/session.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -fPIC $(GIO_CFLAGS) -c $< -o "$@"
 
-$(BUILD_DIR)/verify.o: ../native/verify.c ../native/verify.h ../native/session.h ../native/capture.h biometric-ipc.h | $(BUILD_DIR)
+$(BUILD_DIR)/enroll.o: ../native/enroll.c ../native/enroll.h ../native/records.h ../native/verify.h ../native/session.h ../native/capture.h biometric-ipc.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -fPIC $(GIO_CFLAGS) -c $< -o "$@"
+
+$(BUILD_DIR)/verify.o: ../native/verify.c ../native/verify.h ../native/records.h ../native/session.h ../native/capture.h biometric-ipc.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -fPIC $(GIO_CFLAGS) -c $< -o "$@"
 
 $(BUILD_DIR)/capture.o: ../native/capture.c ../native/capture.h ../native/session.h ../native/sensor-certificate.h transport.h | $(BUILD_DIR)
@@ -82,7 +85,7 @@ $(BUILD_DIR)/session.o: ../native/session.c ../native/session.h ../native/sensor
 $(BUILD_DIR)/test-session: ../native/test-session.c $(BUILD_DIR)/libx1fold-native.a
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(GIO_CFLAGS) $^ $(LDFLAGS) -Wl,--wrap=x1fold_sensor_public_key,--wrap=x1fold_session_status,--wrap=ioctl $(GIO_LIBS) $(CRYPTO_LIBS) -o "$@"
 
-$(BUILD_DIR)/libx1fold-native.a: $(BUILD_DIR)/credentials.o $(BUILD_DIR)/verify.o $(BUILD_DIR)/capture.o $(BUILD_DIR)/session.o $(BUILD_DIR)/transport.o $(BUILD_DIR)/sensor-certificate.o $(BUILD_DIR)/handshake.o $(BUILD_DIR)/host-proof.o
+$(BUILD_DIR)/libx1fold-native.a: $(BUILD_DIR)/credentials.o $(BUILD_DIR)/enroll.o $(BUILD_DIR)/verify.o $(BUILD_DIR)/capture.o $(BUILD_DIR)/session.o $(BUILD_DIR)/transport.o $(BUILD_DIR)/sensor-certificate.o $(BUILD_DIR)/handshake.o $(BUILD_DIR)/host-proof.o
 	$(AR) rcs "$@" $^
 
 $(BUILD_DIR)/native-inspect: ../native/inspect.c $(BUILD_DIR)/libx1fold-native.a

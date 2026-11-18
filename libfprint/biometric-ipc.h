@@ -6,7 +6,7 @@ enum fold_bio_operation { FOLD_ENROLL = 1, FOLD_VERIFY = 2, FOLD_DELETE = 3 };
 enum fold_bio_event {
     FOLD_BEGIN = 0, FOLD_PROGRESS = 1, FOLD_RETRY = 2, FOLD_ENROLLED = 3,
     FOLD_MATCH = 4, FOLD_NO_MATCH = 5, FOLD_ERROR = 6, FOLD_CANCELLED = 7,
-    FOLD_DELETED = 8
+    FOLD_DELETED = 8, FOLD_DUPLICATE = 9
 };
 
 /* Wire values use octets only. guid is the exact 16-byte WinBio GUID

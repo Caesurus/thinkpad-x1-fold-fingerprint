@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 /* One unprivileged socket-activated fprintd transaction. */
 #include "credentials.h"
-#include "verify.h"
+#include "enroll.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -27,12 +27,32 @@ watch_client (gpointer arg)
   return NULL;
 }
 
-static enum fold_bio_event
-run_operation (int hid, const struct fold_bio_frame *request, GCancellable *cancel, GError **error)
+struct enrollment_client {
+  int channel;
+  struct fold_bio_frame request;
+  guint stage;
+};
+
+static gboolean
+report_sample (guint percent, gboolean retry, gpointer data)
 {
+  struct enrollment_client *client = data;
+  struct fold_bio_frame reply = client->request;
+  reply.event = retry ? FOLD_RETRY : FOLD_PROGRESS;
+  if (!retry)
+    {
+      if (client->stage == 10)
+        return TRUE;
+      reply.stage = ++client->stage;
+    }
+  return send (client->channel, &reply, sizeof reply, MSG_NOSIGNAL | MSG_DONTWAIT) == sizeof reply;
+}
+
+static enum fold_bio_event
+run_operation (int hid, const struct fold_bio_frame *request, struct monitor *monitor, GError **error)
+{
+  GCancellable *cancel = monitor->cancel;
   const struct fold_bio_identity *print = &request->print;
-  if (request->op != FOLD_VERIFY && request->op != FOLD_DELETE)
-    return FOLD_ERROR;
   const char *path = g_getenv ("CREDENTIALS_DIRECTORY");
   const char *names[] = {"sensor.cert", "host.cert", "host-key.pem"};
   int dir = path ? open (path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW) : -1;
@@ -85,6 +105,16 @@ run_operation (int hid, const struct fold_bio_frame *request, GCancellable *canc
       if (ok)
         result = matched ? FOLD_MATCH : FOLD_NO_MATCH;
     }
+  else if (request->op == FOLD_ENROLL)
+    {
+      struct enrollment_client client = {.channel = monitor->socket, .request = *request};
+      deadline = g_get_monotonic_time () + 110 * G_TIME_SPAN_SECOND;
+      ok = x1fold_enroll_print (session, print, deadline, cancel, report_sample, &client, error);
+      if (ok)
+        result = FOLD_ENROLLED;
+      else if (g_error_matches (*error, G_IO_ERROR, G_IO_ERROR_EXISTS))
+        result = FOLD_DUPLICATE;
+    }
   else
     {
       ok = x1fold_delete_print (session, print, deadline, cancel, error);
@@ -115,7 +145,7 @@ main (void)
   g_autoptr(GCancellable) cancel = g_cancellable_new ();
   struct monitor monitor = {channel, cancel};
   GThread *watcher = g_thread_new ("fprintd-disconnect", watch_client, &monitor);
-  frame.event = run_operation (hid, &frame, cancel, &error);
+  frame.event = run_operation (hid, &frame, &monitor, &error);
   close (hid);
   gboolean sent = send (channel, &frame, sizeof frame, MSG_NOSIGNAL) == sizeof frame;
   shutdown (channel, SHUT_RDWR);
