@@ -11,6 +11,7 @@ struct x1fold_version {
 
 gboolean x1fold_check_fd (int fd, dev_t expected, GError **error);
 gboolean x1fold_session_status (int fd, gboolean *active, GError **error);
+gboolean x1fold_parse_version (const guint8 *reply, gsize size, struct x1fold_version *version);
 gboolean x1fold_read_version (int fd, struct x1fold_version *version, gboolean recover,
                               GCancellable *cancellable, GError **error);
 gboolean x1fold_is_descriptor (const guint8 *descriptor, gsize size);

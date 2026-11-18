@@ -201,6 +201,20 @@ x1fold_session_status (int fd, gboolean *active, GError **error)
 }
 
 gboolean
+x1fold_parse_version (const guint8 *reply, gsize size, struct x1fold_version *info)
+{
+  if (size != 38 || reply[0] != 0 || reply[1] != 0)
+    return FALSE;
+  *info = (struct x1fold_version) {
+    .build = read_le32 (reply + 6), .major = reply[10], .minor = reply[11],
+    .product = reply[13], .security = (guint16) (reply[24] | (reply[25] << 8)),
+    .firmware_interface = reply[30], .provisioning = reply[37] & 0x0f
+  };
+  memcpy (info->serial, reply + 18, sizeof info->serial);
+  return TRUE;
+}
+
+gboolean
 x1fold_read_version (int fd, struct x1fold_version *info, gboolean recover,
                      GCancellable *cancellable, GError **error)
 {
@@ -215,14 +229,8 @@ x1fold_read_version (int fd, struct x1fold_version *info, gboolean recover,
           g_prefix_error (error, "Invalid Tudor GET_VERSION exchange: ");
           return FALSE;
         }
-      if (size == 38 && reply[0] == 0 && reply[1] == 0)
+      if (x1fold_parse_version (reply, size, info))
         {
-          *info = (struct x1fold_version) {
-            .build = read_le32 (reply + 6), .major = reply[10], .minor = reply[11],
-            .product = reply[13], .security = (guint16) (reply[24] | (reply[25] << 8)),
-            .firmware_interface = reply[30], .provisioning = reply[37] & 0x0f
-          };
-          memcpy (info->serial, reply + 18, sizeof info->serial);
           g_debug ("X1 Fold Tudor firmware %u.%u build %u product 0x%02x",
                    reply[10], reply[11], read_le32 (reply + 6), reply[13]);
           return TRUE;

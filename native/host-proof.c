@@ -16,13 +16,10 @@ coordinate_matches (EVP_PKEY *key, const char *name, const guint8 *coordinate)
 }
 
 gboolean
-x1fold_build_host_proof (const struct x1fold_server_flight *flight,
-                         const guint8 *cert, gsize cert_len, EVP_PKEY *host_identity,
-                         GBytes **messages, EVP_PKEY **exchange_key, GError **error)
+x1fold_check_host_identity (const guint8 *cert, gsize cert_len, EVP_PKEY *host_identity,
+                            GError **error)
 {
-  *messages = NULL;
-  *exchange_key = NULL;
-  if (!flight || !flight->transcript || !cert || cert_len != 400 ||
+  if (!cert || cert_len != 400 ||
       memcmp (cert, "\x3f\x5f\x17\x00", 4) || cert[141] != 2 ||
       cert[142] != 32 || cert[143] != 0 || !host_identity ||
       !EVP_PKEY_is_a (host_identity, "EC") ||
@@ -33,6 +30,19 @@ x1fold_build_host_proof (const struct x1fold_server_flight *flight,
                            "Expected a returned host certificate and its matching signing key");
       return FALSE;
     }
+  return TRUE;
+}
+
+gboolean
+x1fold_build_host_proof (const struct x1fold_server_flight *flight,
+                         const guint8 *cert, gsize cert_len, EVP_PKEY *host_identity,
+                         GBytes **messages, EVP_PKEY **exchange_key, GError **error)
+{
+  *messages = NULL;
+  *exchange_key = NULL;
+  g_return_val_if_fail (flight && flight->transcript, FALSE);
+  if (!x1fold_check_host_identity (cert, cert_len, host_identity, error))
+    return FALSE;
   /* The Tudor Certificate message repeats the 400-byte length and has two
    * reserved bytes before the certificate. Initialize those bytes explicitly. */
   const guint8 cert_header[] = {11,0,1,0x98, 0,1,0x90, 0,1,0x90, 0,0};

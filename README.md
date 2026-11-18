@@ -21,7 +21,7 @@ Install the build, test, and runtime dependencies on Ubuntu 26.04 amd64.
 ```sh
 sudo apt install build-essential binutils git curl patch pkg-config innoextract python3 \
     libfprint-2-dev libfprint-2-tod-dev libgudev-1.0-dev libglib2.0-dev libgio-2.0-dev \
-    libusb-1.0-0-dev libssl-dev umockdev python3-gi gir1.2-umockdev-1.0 \
+    libusb-1.0-0-dev libssl-dev umockdev python3-cryptography python3-gi gir1.2-umockdev-1.0 \
     gir1.2-fprint-2.0 fprintd libpam-fprintd
 ```
 
