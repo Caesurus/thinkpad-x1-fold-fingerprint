@@ -34,7 +34,10 @@ $(BUILD_DIR)/test-print-identity: tests/print-identity.c print-identity.c print-
 $(BUILD_DIR)/test-transport: tests/transport.c transport.c transport.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(GIO_CFLAGS) tests/transport.c transport.c $(LDFLAGS) $(GIO_LIBS) -o "$@"
 
-check: all $(BUILD_DIR)/native-register $(BUILD_DIR)/native-worker $(BUILD_DIR)/test-worker $(BUILD_DIR)/test-session $(BUILD_DIR)/test-host-proof $(BUILD_DIR)/test-handshake $(BUILD_DIR)/test-certificate $(BUILD_DIR)/test-pairing $(BUILD_DIR)/test-transport $(BUILD_DIR)/test-biometric-ipc $(BUILD_DIR)/test-print-identity
+$(BUILD_DIR)/test-worker-channel.preload: tests/worker-channel.c biometric-ipc.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -fPIC -shared $< $(LDFLAGS) -o "$@"
+
+check: all $(BUILD_DIR)/test-worker-channel.preload $(BUILD_DIR)/native-register $(BUILD_DIR)/native-worker $(BUILD_DIR)/test-worker $(BUILD_DIR)/test-session $(BUILD_DIR)/test-host-proof $(BUILD_DIR)/test-handshake $(BUILD_DIR)/test-certificate $(BUILD_DIR)/test-pairing $(BUILD_DIR)/test-transport $(BUILD_DIR)/test-biometric-ipc $(BUILD_DIR)/test-print-identity
 	$(PYTHON) -B ../native/test-register.py "$(BUILD_DIR)/native-register"
 	$(PYTHON) -B ../native/test-session.py "$(BUILD_DIR)/test-session" "$(BUILD_DIR)/test-worker"
 	$(BUILD_DIR)/test-host-proof
@@ -44,6 +47,7 @@ check: all $(BUILD_DIR)/native-register $(BUILD_DIR)/native-worker $(BUILD_DIR)/
 	$(BUILD_DIR)/test-transport
 	$(BUILD_DIR)/test-biometric-ipc
 	$(PRIVATE_DRIVER) FP_TOD_KEEP_MODULES_OPEN=TRUE $(UMOCKDEV_WRAPPER) $(PYTHON) tests/device.py -v
+	$(PRIVATE_DRIVER) FP_TOD_KEEP_MODULES_OPEN=TRUE LD_PRELOAD="$(abspath $(BUILD_DIR))/test-worker-channel.preload" $(UMOCKDEV_WRAPPER) $(PYTHON) -B tests/cancel.py
 
 discover: all
 	$(PRIVATE_DRIVER) $(BUILD_DIR)/x1fold-probe
