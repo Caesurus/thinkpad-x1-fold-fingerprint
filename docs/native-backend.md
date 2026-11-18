@@ -25,6 +25,14 @@ make check
 | Record query and individual deletion | Native lookup, template deletion and readback implemented | Software peer tests cover deletion with another enrollment present, an absent print, ambiguous records and inconsistent readback. Physical deletion needs a separate disposable enrollment. |
 | Firmware, configuration, diagnostics | Public firmware query only | The Fold DLL carries a signed main firmware update older than the measured build 3654703. Package applicability, update and recovery are separate from the authentication path. No native update was attempted. |
 
+## Pairing credentials and the hardware test
+
+The Fold v153 HID DLL's advanced pairing path sends command `0x93` with a 400-byte public host certificate. At RVA 0x9019c it reserves 401 bytes for the request. At 0x901f0 it expects an 802-byte reply, and at 0x9028e it copies the 800 bytes after the status. This establishes the exchange format on this driver. Static analysis also identifies a separate basic pairing path. Selecting a different path changes the trust protocol.
+
+A published recording from a related reader shows both sides of that exchange. In `finger2.pcapng` frame 241 the host sends a role-0 certificate with a 70-byte DER signature. The reply spans frames 244 and 246. The returned host record has the same 136 bytes of public coordinates, role 2 and a 32-byte field at the signature location. The other record contains the signed sensor certificate. The host private key stays with its owner. A saved USB exchange alone therefore cannot provide the key that signs a new session. [Public packet recording](https://github.com/vojtapl/synaTudorMiS/tree/5b3aecb3432b67083beeabdc1cfb0718513a83dd/reverse%20engineering/SP141455/Wireshark%20usb%20log)
+
+Windows provides an administrator-only biometric maintenance API for vendor-defined operations. The control code and buffer formats come from the vendor. The Fold adapter exposes privileged sensor and storage handlers at RVAs 0x7b10 and 0xcdb0. Its privileged engine handler at 0x4550 returns `E_NOTIMPL`. The presence of a maintenance API supplies no evidence of an owner-facing pairing export. A documented issuance or migration interface for this model, or an existing owner-authorized credential usable by a Linux signing provider, would enable the next physical test. [Microsoft WinBio maintenance API](https://learn.microsoft.com/windows/win32/api/winbio/nf-winbio-winbiocontrolunitprivileged)
+
 ## DLL call paths
 
 RVAs below refer to the Fold v153 PE images. The package and file SHA-256 values are recorded in the repository's worker builder. Names for internal HID functions come from diagnostic string references matched to PE function bounds. Windows device-control numbers identify requests between the two DLLs. The on-wire HID commands are a separate protocol.
