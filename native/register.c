@@ -6,10 +6,12 @@
 #include "pairing.h"
 #include <errno.h>
 #include <fcntl.h>
+#include <openssl/pem.h>
 #include <openssl/store.h>
 #include <openssl/ui.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 static EVP_PKEY *
@@ -80,6 +82,104 @@ parse_serial (const char *s, guint8 out[6])
     }
   static const guint8 blank[6], erased[6] = {255,255,255,255,255,255};
   return memcmp (out, blank, 6) && memcmp (out, erased, 6);
+}
+
+static void
+free_key_bio (gpointer data)
+{
+  BIO_free (data);
+}
+
+/* Serialize only the owner key whose public coordinates were just checked. */
+static GBytes *
+encode_owner (EVP_PKEY *owner, GError **error)
+{
+  BIO *bio = BIO_new (BIO_s_secmem ());
+  char *pem = NULL;
+  long len = 0;
+  if (bio && PEM_write_bio_PrivateKey (bio, owner, NULL, NULL, 0, NULL, NULL) == 1)
+    len = BIO_get_mem_data (bio, &pem);
+  if (len > 0)
+    return g_bytes_new_with_free_func (pem, len, free_key_bio, bio);
+  BIO_free (bio);
+  g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_FAILED, "Cannot encode validated host key");
+  return NULL;
+}
+
+/* Only ciphertext goes to stdout. systemd-creds reads the inputs over pipes. */
+static GBytes *
+encrypt_credential (const char *name, GBytes *value, gboolean user_scope, GError **error)
+{
+  g_autofree char *option = g_strdup_printf ("--name=%s", name);
+  const char *args[9] = {"/usr/bin/systemd-creds", "--with-key=host", "--pretty", option};
+  guint i = 4;
+  if (user_scope)
+    args[i++] = "--user";
+  args[i++] = "encrypt";
+  args[i++] = "-";
+  args[i++] = "-";
+  g_autoptr(GSubprocess) proc = g_subprocess_newv (args,
+      G_SUBPROCESS_FLAGS_STDIN_PIPE | G_SUBPROCESS_FLAGS_STDOUT_PIPE, error);
+  if (!proc)
+    return NULL;
+  g_autoptr(GBytes) output = NULL;
+  if (!g_subprocess_communicate (proc, value, NULL, &output, NULL, error) ||
+      !g_subprocess_wait_check (proc, NULL, error))
+    return NULL;
+  return g_steal_pointer (&output);
+}
+
+static int
+service_config (const char *flags, const char *path, gboolean user_scope)
+{
+  g_autoptr(GError) error = NULL;
+  guint64 security;
+  if (!g_ascii_string_to_unsigned (flags, 16, 0, G_MAXUINT16, &security, &error))
+    {
+      fprintf (stderr, "Expected firmware security flags in hexadecimal.\n");
+      return 2;
+    }
+  struct x1fold_version version = {
+    .major = 10, .minor = 1, .product = 0x41, .security = (guint16) security
+  };
+  guint8 reply[802];
+  int result_fd = open (path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+  struct stat st;
+  gboolean complete = result_fd >= 0 && !fstat (result_fd, &st) && S_ISREG (st.st_mode) &&
+                      st.st_size == sizeof reply && pread (result_fd, reply, sizeof reply, 0) == sizeof reply;
+  if (result_fd >= 0)
+    close (result_fd);
+  if (!complete)
+    {
+      fputs ("Expected a complete 802-byte registration response.\n", stderr);
+      return 1;
+    }
+  EVP_PKEY *owner = x1fold_load_host_key_fd (4, &error);
+  g_autoptr(GBytes) host = NULL, sensor = NULL;
+  gboolean valid = owner && x1fold_check_pair_response (&version, owner, reply, sizeof reply,
+                                                        &host, &sensor, &error);
+  g_autoptr(GBytes) pem = valid ? encode_owner (owner, &error) : NULL;
+  EVP_PKEY_free (owner);
+  if (pem)
+    {
+      const char *names[] = {"x1fold-native.host.cert", "x1fold-native.sensor.cert", "x1fold-native.host-key.pem"};
+      GBytes *records[] = {host, sensor, pem};
+      g_autoptr(GString) config = g_string_new ("[Service]\nLoadCredentialEncrypted=\n");
+      for (guint i = 0; i < G_N_ELEMENTS (records); i++)
+        {
+          g_autoptr(GBytes) encrypted = encrypt_credential (names[i], records[i], user_scope, &error);
+          if (!encrypted)
+            break;
+          gsize len;
+          const char *data = g_bytes_get_data (encrypted, &len);
+          g_string_append_len (config, data, len);
+          g_string_append_c (config, '\n');
+        }
+      if (!error)
+        return fwrite (config->str, 1, config->len, stdout) == config->len && fflush (stdout) == 0 ? 0 : 1;
+    }
+  fprintf (stderr, "%s\n", error->message);
+  return 1;
 }
 
 static int
@@ -172,12 +272,15 @@ int
 main (int argc, char **argv)
 {
   guint8 serial[6] = {0};
+  if ((argc == 4 || (argc == 5 && !strcmp (argv[4], "--user"))) && !strcmp (argv[1], "service-config"))
+    return service_config (argv[2], argv[3], argc == 5);
   if (argc == 4 && !strcmp (argv[1], "request"))
     return run (FALSE, serial, argv[2], argv[3]);
   if (argc == 5 && !strcmp (argv[1], "register") && parse_serial (argv[2], serial) && geteuid () != 0)
     return run (TRUE, serial, argv[3], argv[4]);
   fputs ("Usage: native-register request ISSUER-URI NEW-REQUEST\n"
          "       native-register register READER-SERIAL ISSUER-URI NEW-RESPONSE\n"
+         "       native-register service-config SECURITY-HEX SAVED-RESPONSE [--user]\n"
          "Supply the host signing key on fd 4. Registration requires an unprivileged process and reader fd 3.\n",
          stderr);
   return 2;

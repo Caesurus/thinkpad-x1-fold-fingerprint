@@ -47,6 +47,33 @@ A published recording from a related reader shows both sides of that exchange. I
 
 Windows provides an administrator-only biometric maintenance API for vendor-defined operations. The Fold adapter exposes privileged sensor and storage handlers at RVAs 0x7b10 and 0xcdb0. Its privileged engine handler at 0x4550 returns `E_NOTIMPL`. The available evidence has not identified an owner-facing pairing export through those handlers. [Microsoft WinBio maintenance API](https://learn.microsoft.com/windows/win32/api/winbio/nf-winbio-winbiocontrolunitprivileged)
 
+### Evidence for a persistent pairing issuer
+
+The SP141455 USB recording and two Windows debug logs after separate fingerprint-data resets contain three distinct signed host requests with three different host public keys. For each outbound 401-byte PAIR message, the 142-byte certificate body and DER signature determine candidate ECDSA verification keys. Exactly one public key verifies all three requests. Its SHA-256 fingerprint over DER SubjectPublicKeyInfo is `a11d6ebce4a13c3bbf03653be9ea1ed1de24291309f2ba7c4c580b8a89e3e0f6`. OpenSSL independently verified each signature with that public key and rejected a one-byte change to each signed body. Thus the issuer persisted across those host-key changes on the related platform. The tested contiguous public-point encodings and SPKI were absent from the two Fold DLLs. The Fold issuer remains unidentified. [First reset, outbound request](https://github.com/vojtapl/synaTudorMiS/blob/5b3aecb3432b67083beeabdc1cfb0718513a83dd/reverse%20engineering/SP141455/WinDbg%20logs/logs%20after%20BIOS%20reset%20of%20fingerprint%20data/1/log%20detailed%20from%20bios%20fingerprint%20data%20reset#L13426) · [Second reset, outbound request](https://github.com/vojtapl/synaTudorMiS/blob/5b3aecb3432b67083beeabdc1cfb0718513a83dd/reverse%20engineering/SP141455/WinDbg%20logs/logs%20after%20BIOS%20reset%20of%20fingerprint%20data/2/log%20from%20start%20with%20extra%20symbols#L13324) · [USB recording](https://github.com/vojtapl/synaTudorMiS/tree/5b3aecb3432b67083beeabdc1cfb0718513a83dd/reverse%20engineering/SP141455/Wireshark%20usb%20log)
+
+### Installing a completed native pairing
+
+After the reader accepts registration, `native-register service-config` reads the saved 802-byte result and its host private key on fd 4. Supply the firmware security flags measured for that reader as hexadecimal digits. It checks the completion status, host public coordinates and signed sensor certificate for firmware 10.1, product 0x41. It then uses `systemd-creds` to encrypt the three named credentials for this machine and outputs one service drop-in. The running worker still verifies the live sensor during the handshake. A saved response alone cannot establish that the reader retained the pairing.
+
+For the Fold that reported `a10b`, run the following in an administrative shell with the built tool, saved response and matching host key. This publishes the three credentials together and reloads the service template for the next transaction.
+
+```sh
+(
+    set -eu
+    umask 077
+    dir=/etc/systemd/system/x1fold-fingerprint@.service.d
+    mkdir -p "$dir"
+    config=$(mktemp "$dir/.pairing-XXXXXXXX")
+    trap 'rm -f -- "$config"' EXIT
+    ./build/native-register service-config a10b /path/to/saved-response \
+        4</path/to/owner-key.pem >"$config"
+    mv -T -- "$config" "$dir/50-pairing.conf"
+    systemctl daemon-reload
+)
+```
+
+An optional integration test uses a temporary owner key, a public sensor certificate from the recording and an isolated user service. It verifies that systemd delivers both certificates and the owner key under the worker's exact credential names. Run `python3 native/test-register.py build/native-register /path/to/public-sensor-certificate.bin` from a desktop session. The `--user` encryption scope used by this test is specific to the user service.
+
 ## DLL call paths
 
 RVAs below refer to the Fold v153 PE images. The package and file SHA-256 values are recorded in the repository's worker builder. Names for internal HID functions come from diagnostic string references matched to PE function bounds. Windows device-control numbers identify requests between the two DLLs. The on-wire HID commands are a separate protocol.
