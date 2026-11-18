@@ -1,8 +1,40 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "pairing.h"
 #include "host-proof.h"
+#include <openssl/core_names.h>
 #include <string.h>
 #include <sys/stat.h>
+
+GBytes *
+x1fold_create_host_request (EVP_PKEY *host, EVP_PKEY *signer, GError **error)
+{
+  guint8 cert[400] = {0x3f, 0x5f, 0x17, 0};
+  BIGNUM *x = NULL, *y = NULL;
+  gboolean encoded = host && EVP_PKEY_is_a (host, "EC") &&
+    EVP_PKEY_get_bn_param (host, OSSL_PKEY_PARAM_EC_PUB_X, &x) == 1 &&
+    EVP_PKEY_get_bn_param (host, OSSL_PKEY_PARAM_EC_PUB_Y, &y) == 1 &&
+    BN_bn2lebinpad (x, cert + 4, 68) == 68 && BN_bn2lebinpad (y, cert + 72, 68) == 68;
+  BN_free (x);
+  BN_free (y);
+  if (!encoded || !x1fold_host_public_matches (cert, sizeof cert, host))
+    {
+      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT, "Expected a P-256 host public key");
+      return NULL;
+    }
+  EVP_MD_CTX *ctx = EVP_MD_CTX_new ();
+  size_t len = 72;
+  gboolean signed_ok = ctx && signer && EVP_PKEY_parameters_eq (host, signer) == 1 &&
+    EVP_DigestSignInit (ctx, NULL, EVP_sha256 (), NULL, signer) == 1 &&
+    EVP_DigestSign (ctx, cert + 144, &len, cert, 142) == 1 && len >= 8 && len <= 72;
+  EVP_MD_CTX_free (ctx);
+  if (!signed_ok)
+    {
+      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_FAILED, "The configured pairing issuer could not sign");
+      return NULL;
+    }
+  cert[142] = (guint8) len;
+  return g_bytes_new (cert, sizeof cert);
+}
 
 static gboolean
 validate_request (GBytes *request, EVP_PKEY *host, EVP_PKEY *issuer, GError **error)
@@ -97,7 +129,7 @@ x1fold_register_host (int fd, const guint8 serial[6], GBytes *request, EVP_PKEY 
     return X1FOLD_PAIR_NOT_SENT;
   if (!x1fold_parse_version (raw_version, size, &version) || memcmp (serial, version.serial, 6) ||
       version.product != 0x41 || version.major != 10 || version.minor != 1 ||
-      version.provisioning != 3 || !(version.security & 1))
+      version.provisioning != 3 || !(version.security & X1FOLD_SECURITY_ADVANCED_PAIRING))
     {
       g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED, "Unexpected pairing target or profile");
       return X1FOLD_PAIR_NOT_SENT;

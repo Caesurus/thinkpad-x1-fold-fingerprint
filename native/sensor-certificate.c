@@ -55,7 +55,7 @@ x1fold_sensor_public_key (const struct x1fold_version *version, const guint8 *re
                           gsize length, GError **error)
 {
   if (version->product != 0x41 || version->major != 10 || version->minor != 1 ||
-      !(version->security & 1))
+      !(version->security & X1FOLD_SECURITY_ADVANCED_PAIRING))
     {
       g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
                            "Unknown sensor certificate verification profile");

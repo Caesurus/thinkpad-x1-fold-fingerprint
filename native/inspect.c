@@ -97,10 +97,11 @@ main (int argc, char **argv)
   if (capture)
     puts ("Reader reported finger down and frame ready. Capture finished and session closed.");
   printf ("%sfirmware %u.%u build %u, product 0x%02x, interface 0x%02x, "
-          "provisioning %u, security flags 0x%04x\n",
+          "provisioning %u, security flags 0x%04x, pairing mode %s\n",
           paired ? "Verified paired session, closed, " : "Reader ",
           info.major, info.minor, info.build, info.product, info.firmware_interface,
-          info.provisioning, info.security);
+          info.provisioning, info.security,
+          info.security & X1FOLD_SECURITY_ADVANCED_PAIRING ? "advanced" : "basic");
   return 0;
 failure:
   fprintf (stderr, "%s\n", error->message);

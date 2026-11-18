@@ -3,6 +3,8 @@
 #include <gio/gio.h>
 #include <sys/types.h>
 
+#define X1FOLD_SECURITY_ADVANCED_PAIRING (1u << 0)
+
 struct x1fold_version {
   guint32 build;
   guint16 security;

@@ -6,9 +6,14 @@ typedef enum {
   X1FOLD_PAIR_NOT_SENT, X1FOLD_PAIR_UNCONFIRMED, X1FOLD_PAIR_REFUSED, X1FOLD_PAIR_ACCEPTED
 } X1FoldPairOutcome;
 
+/* Construct the public record locally. Supply the owner's host public key and
+ * a signing-provider handle already authorized to issue requests for this
+ * reader. No export of either private key is needed. */
+GBytes *x1fold_create_host_request (EVP_PKEY *host_public, EVP_PKEY *issuer_signer, GError **error);
+
 /* Explicit administrative registration on an exclusively claimed, nonblocking
- * reader. The caller has already persisted the owner's signing key and obtained
- * the 400-byte host request from the issuer accepted by this reader. Supply
+ * reader. Persist the owner's signing key and prepare the 400-byte host
+ * request with the issuer accepted by this reader. Supply
  * that issuer's trusted public key independently of the request. The caller
  * must have authorized registration on this particular reader. Provisioning
  * state 3 also occurs on owned readers. Never retry

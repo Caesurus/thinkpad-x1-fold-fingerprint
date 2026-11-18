@@ -29,7 +29,7 @@ For fingerprint operations systemd loads these three credentials from the system
 | `x1fold-native.host.cert` | Reader's 400-byte returned host certificate |
 | `x1fold-native.host-key.pem` | Corresponding host P-256 private key in PEM format |
 
-The native library also implements explicit registration for an owner with an issuer-approved host request. The original installation uses a different credential format. Migration and physical native verification are still open.
+The optional `make native-register` tool constructs and signs the host request locally through OpenSSL. It can also send a registration to an explicitly selected reader. The original Fold driver generated its host identity locally and has a local certificate-signing path. Its measured firmware flags select advanced pairing. The signing identity accepted for native registration on this keyboard remains unresolved. The installed native worker has read the Fold's firmware and reached the credential-loading step. Physical native fingerprint unlock remains unverified. [Pairing implementation and evidence](docs/native-backend.md#pairing-credentials-and-the-hardware-test)
 
 ## Legacy Lenovo-backed build
 

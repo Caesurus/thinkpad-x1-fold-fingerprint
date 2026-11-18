@@ -2,7 +2,6 @@
 /* Validate normal registration with an ephemeral test issuer and local
  * owner. The optional public fixture exercises the real sensor trust anchor. */
 #include "pairing.h"
-#include <openssl/core_names.h>
 #include <openssl/pem.h>
 #include <string.h>
 #include <unistd.h>
@@ -12,6 +11,7 @@ static enum response behavior;
 static guint reads, writes;
 static gboolean busy;
 static guint8 provisioning = 3;
+static guint8 security_low = 0x0b;
 static guint8 record[400], sensor[400], serial[6] = {1,2,3,4,5,6};
 
 gboolean
@@ -40,7 +40,7 @@ __wrap_x1fold_exchange (int fd, const guint8 *cmd, gsize len, guint8 *reply, gsi
       reply[11] = 1;
       reply[13] = 0x41;
       memcpy (reply + 18, serial, 6);
-      reply[24] = 0x0b;
+      reply[24] = security_low;
       reply[25] = 0xa1;
       reply[37] = provisioning;
       *size = 38;
@@ -101,19 +101,10 @@ main (int argc, char **argv)
   EVP_PKEY *issuer = EVP_PKEY_Q_keygen (NULL, NULL, "EC", "prime256v1");
   g_assert_nonnull (host);
   g_assert_nonnull (issuer);
-  memcpy (record, "\x3f\x5f\x17\x00", 4);
-  BIGNUM *coord = NULL;
-  g_assert_true (EVP_PKEY_get_bn_param (host, OSSL_PKEY_PARAM_EC_PUB_X, &coord));
-  g_assert_cmpint (BN_bn2lebinpad (coord, record + 4, 68), ==, 68);
-  g_assert_true (EVP_PKEY_get_bn_param (host, OSSL_PKEY_PARAM_EC_PUB_Y, &coord));
-  g_assert_cmpint (BN_bn2lebinpad (coord, record + 72, 68), ==, 68);
-  BN_free (coord);
-  EVP_MD_CTX *ctx = EVP_MD_CTX_new ();
-  size_t len = 72;
-  g_assert_cmpint (EVP_DigestSignInit (ctx, NULL, EVP_sha256 (), NULL, issuer), ==, 1);
-  g_assert_cmpint (EVP_DigestSign (ctx, record + 144, &len, record, 142), ==, 1);
-  record[142] = len;
-  EVP_MD_CTX_free (ctx);
+  g_autoptr(GBytes) generated = x1fold_create_host_request (host, issuer, NULL);
+  g_assert_nonnull (generated);
+  g_assert_cmpuint (g_bytes_get_size (generated), ==, sizeof record);
+  memcpy (record, g_bytes_get_data (generated, NULL), sizeof record);
   guint8 other[6] = {2};
   attempt (issuer, issuer, serial, 0, 0, X1FOLD_PAIR_NOT_SENT);
   attempt (host, host, serial, 0, 0, X1FOLD_PAIR_NOT_SENT);
@@ -123,6 +114,12 @@ main (int argc, char **argv)
   const guint8 *encoded = der;
   EVP_PKEY *public_only = d2i_PUBKEY (NULL, &encoded, der_len);
   g_assert_nonnull (public_only);
+  g_assert_null (x1fold_create_host_request (host, public_only, NULL));
+  EVP_PKEY *wrong_curve = EVP_PKEY_Q_keygen (NULL, NULL, "EC", "secp384r1");
+  g_assert_nonnull (wrong_curve);
+  g_assert_null (x1fold_create_host_request (wrong_curve, issuer, NULL));
+  g_assert_null (x1fold_create_host_request (host, wrong_curve, NULL));
+  EVP_PKEY_free (wrong_curve);
   attempt (public_only, issuer, serial, 0, 0, X1FOLD_PAIR_NOT_SENT);
   EVP_PKEY_free (public_only);
   OPENSSL_free (der);
@@ -136,6 +133,9 @@ main (int argc, char **argv)
   provisioning = 1;
   attempt (host, issuer, serial, 1, 0, X1FOLD_PAIR_NOT_SENT);
   provisioning = 3;
+  security_low = 0x0a;
+  attempt (host, issuer, serial, 1, 0, X1FOLD_PAIR_NOT_SENT);
+  security_low = 0x0b;
   behavior = REFUSE;
   attempt (host, issuer, serial, 1, 1, X1FOLD_PAIR_REFUSED);
   behavior = SHORT;
@@ -166,6 +166,16 @@ main (int argc, char **argv)
       g_assert_cmpuint (size, ==, 401);
       g_assert_cmpuint ((guint8) captured_request[0], ==, 0x93);
       g_assert_cmpmem (captured_request + 5, 136, response + 6, 136);
+      g_autoptr(GBytes) reconstructed = x1fold_create_host_request (recorded_host, issuer, NULL);
+      g_assert_nonnull (reconstructed);
+      g_assert_cmpmem (g_bytes_get_data (reconstructed, NULL), 142, captured_request + 1, 142);
+      guint8 *raw = (guint8 *) captured_request + 1;
+      guint siglen = raw[142] | ((guint) raw[143] << 8);
+      g_assert_cmpuint (siglen, <=, 72);
+      EVP_MD_CTX *verify = EVP_MD_CTX_new ();
+      g_assert_cmpint (EVP_DigestVerifyInit (verify, NULL, EVP_sha256 (), NULL, recorded_host), ==, 1);
+      g_assert_cmpint (EVP_DigestVerify (verify, raw + 144, siglen, raw, 142), ==, 0);
+      EVP_MD_CTX_free (verify);
       EVP_PKEY_free (recorded_host);
     }
   EVP_PKEY_free (issuer);
