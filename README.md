@@ -4,7 +4,7 @@ This driver lets KDE and `fprintd` enroll and verify fingers on the USB-connecte
 
 The tested system ran **Ubuntu 26.04.1 on x86-64**, Ubuntu's libfprint 1.95.1 TOD interface, and fprintd 1.94.5. On that system a right-index enrollment unlocked the KDE desktop twice. Password fallback also worked. Successive scans opened fresh workers using the same sensor pairing while the keyboard stayed connected.
 
-Development of the independent Linux C backend is on the `native-backend` branch. `make native native-worker` builds its static library and experimental verification worker offline. The worker requires an existing pairing credential for the reader. Hardware acceptance is pending. The installed release uses the Lenovo worker for biometric operations. [Native implementation and verification status](docs/native-backend.md)
+Development of the independent Linux C backend is on the `native-backend` branch. `make native native-worker` builds its static library and experimental biometric worker offline. The worker supports verification and individual print deletion and requires an existing pairing credential for the reader. Hardware acceptance is pending. The installed release uses the Lenovo worker for biometric operations. [Native implementation and verification status](docs/native-backend.md)
 
 ## Before building
 

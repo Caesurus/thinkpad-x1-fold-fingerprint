@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "verify.h"
+#include <stdlib.h>
 #include <string.h>
 
-enum { MATCH = 0x99, METRICS = 0x9d, LIST = 0x9f, DATA = 0xa1, TEMPLATE = 2, PAYLOAD = 3 };
+enum { MATCH = 0x99, METRICS = 0x9d, LIST = 0x9f, DATA = 0xa1, DELETE_OBJECT = 0xa3,
+       TEMPLATE = 2, PAYLOAD = 3 };
 enum { RECORD_LIMIT = 16384, GUID_SUBJECT = 2 };
 
 struct metadata {
@@ -125,22 +127,44 @@ read_object (X1FoldSession *s, guint8 operation, guint8 kind, const guint8 id[16
   return NULL;
 }
 
-static gboolean
-resolve_print (X1FoldSession *s, const struct fold_bio_identity *print, guint8 tuid[16],
-               gint64 deadline, GCancellable *cancel, GError **error)
+static int
+compare_ids (const void *a, const void *b)
+{
+  return memcmp (a, b, 16);
+}
+
+static GBytes *
+list_templates (X1FoldSession *s, gint64 deadline, GCancellable *cancel, GError **error)
 {
   guint8 all[16];
   memset (all, 0xff, sizeof all);
-  g_autoptr(GBytes) list = read_object (s, LIST, TEMPLATE, all, deadline, cancel, error);
+  GBytes *list = read_object (s, LIST, TEMPLATE, all, deadline, cancel, error);
   if (!list)
-    return FALSE;
+    return NULL;
+  gsize len;
+  guint8 *ids = g_bytes_unref_to_data (list, &len);
+  if (len > 16)
+    qsort (ids, len / 16, 16, compare_ids);
+  for (gsize i = 0; i < len; i += 16)
+    if (!usable_id (ids + i, 16) || (i && !memcmp (ids + i - 16, ids + i, 16)))
+      {
+        g_free (ids);
+        invalid (error, "Invalid or duplicate template in reader directory");
+        return NULL;
+      }
+  return g_bytes_new_take (ids, len);
+}
+
+static gboolean
+resolve_print (X1FoldSession *s, const struct fold_bio_identity *print, GBytes *list,
+               gboolean deleting, guint8 tuid[16], gboolean *found, gint64 deadline,
+               GCancellable *cancel, GError **error)
+{
   gsize len;
   const guint8 *ids = g_bytes_get_data (list, &len);
-  gboolean found = FALSE;
+  *found = FALSE;
   for (gsize i = 0; i < len; i += 16)
     {
-      if (!usable_id (ids + i, 16))
-        return invalid (error, "Unexpected template ID in reader directory");
       g_autoptr(GBytes) children = read_object (s, LIST, PAYLOAD, ids + i, deadline, cancel, error);
       if (!children)
         return FALSE;
@@ -162,16 +186,16 @@ resolve_print (X1FoldSession *s, const struct fold_bio_identity *print, guint8 t
             return invalid (error, "Enrollment payload refers to another template");
           if (belongs_to (&meta, print))
             {
-              if (found)
+              if (*found)
                 return invalid (error, "Ambiguous enrollment on reader");
+              if (deleting && child_len != 16)
+                return invalid (error, "Refusing to remove a template with multiple payloads");
               memcpy (tuid, meta.tuid, 16);
-              found = TRUE;
+              *found = TRUE;
             }
         }
     }
-  if (!found)
-    g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND, "Requested enrollment missing on reader");
-  return found;
+  return TRUE;
 }
 
 static gboolean
@@ -222,12 +246,10 @@ match_frame (X1FoldSession *s, const struct fold_bio_identity *print, const guin
   return TRUE;
 }
 
-gboolean
-x1fold_verify_print (X1FoldSession *s, const struct fold_bio_identity *print,
-                     gint64 deadline, GCancellable *cancel, void (*ready) (gpointer),
-                     gpointer user_data, gboolean *matched, GError **error)
+static gboolean
+check_reader (X1FoldSession *s, const struct fold_bio_identity *print, gint64 deadline,
+              GCancellable *cancel, GError **error)
 {
-  *matched = FALSE;
   if (!print || !usable_id (print->guid, 16) || !usable_id (print->serial, 6) ||
       print->reserved || print->finger < 1 || print->finger > 10)
     return invalid (error, "Invalid saved enrollment identity");
@@ -236,11 +258,70 @@ x1fold_verify_print (X1FoldSession *s, const struct fold_bio_identity *print,
     return FALSE;
   if (memcmp (version.serial, print->serial, 6))
     return invalid (error, "Saved enrollment belongs to a different reader");
+  return TRUE;
+}
+
+gboolean
+x1fold_verify_print (X1FoldSession *s, const struct fold_bio_identity *print,
+                     gint64 deadline, GCancellable *cancel, void (*ready) (gpointer),
+                     gpointer user_data, gboolean *matched, GError **error)
+{
+  *matched = FALSE;
+  if (!check_reader (s, print, deadline, cancel, error))
+    return FALSE;
+  g_autoptr(GBytes) list = list_templates (s, deadline, cancel, error);
   guint8 tuid[16];
-  gboolean acceptable;
-  if (!resolve_print (s, print, tuid, deadline, cancel, error) ||
-      !x1fold_capture_frame (s, X1FOLD_CAPTURE_VERIFY, deadline, cancel, ready, user_data, error) ||
+  gboolean found, acceptable;
+  if (!list || !resolve_print (s, print, list, FALSE, tuid, &found, deadline, cancel, error))
+    return FALSE;
+  if (!found)
+    {
+      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND, "Requested enrollment missing on reader");
+      return FALSE;
+    }
+  if (!x1fold_capture_frame (s, X1FOLD_CAPTURE_VERIFY, deadline, cancel, ready, user_data, error) ||
       !check_frame_quality (s, deadline, cancel, &acceptable, error))
     return FALSE;
   return !acceptable || match_frame (s, print, tuid, deadline, cancel, matched, error);
+}
+
+gboolean
+x1fold_delete_print (X1FoldSession *s, const struct fold_bio_identity *print, gint64 deadline,
+                     GCancellable *cancel, GError **error)
+{
+  if (!check_reader (s, print, deadline, cancel, error))
+    return FALSE;
+  g_autoptr(GBytes) before = list_templates (s, deadline, cancel, error);
+  if (!before)
+    return FALSE;
+  guint8 command[21] = {DELETE_OBJECT, TEMPLATE};
+  guint8 *target = command + 5;
+  gboolean found;
+  if (!resolve_print (s, print, before, TRUE, target, &found, deadline, cancel, error))
+    return FALSE;
+  if (!found)
+    return TRUE; /* Already absent, including retry after a lost reply. */
+  guint8 reply[4];
+  gsize len;
+  if (!x1fold_session_command (s, command, sizeof command, reply, sizeof reply, &len,
+                               deadline, cancel, error) || !ok_status (DELETE_OBJECT, reply, len, error))
+    return FALSE;
+  if (len != sizeof reply || le16 (reply + 2) == 0)
+    return invalid (error, "Reader did not confirm template deletion");
+  g_autoptr(GBytes) after = list_templates (s, deadline, cancel, error);
+  if (!after)
+    return FALSE;
+  gsize before_len, after_len, pos = 0;
+  const guint8 *old = g_bytes_get_data (before, &before_len);
+  const guint8 *remaining = g_bytes_get_data (after, &after_len);
+  if (before_len - 16 != after_len)
+    return invalid (error, "Unexpected template count after deletion");
+  for (gsize i = 0; i < before_len; i += 16)
+    if (memcmp (old + i, target, 16))
+      {
+        if (memcmp (old + i, remaining + pos, 16))
+          return invalid (error, "Another template changed during deletion");
+        pos += 16;
+      }
+  return TRUE;
 }

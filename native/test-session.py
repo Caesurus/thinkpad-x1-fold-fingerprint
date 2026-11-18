@@ -122,7 +122,7 @@ def capture(sock, keys, mode, seq=1):
     return seq
 
 
-def verify(sock, keys, mode):
+def print_operation(sock, keys, mode):
     seq = 1
     tuid = b"T" * 16
     child = b"P" * 16
@@ -141,10 +141,10 @@ def verify(sock, keys, mode):
 
     version = bytearray(38)
     version[18:24] = bytes([1, 2, 3, 4, 5, 6])
-    if mode == "verify-directory-serial":
+    if mode in ("verify-directory-serial", "delete-wrong-serial"):
         version[18] ^= 1
     exchange(b"\x01", version)
-    if mode == "verify-directory-serial":
+    if mode in ("verify-directory-serial", "delete-wrong-serial"):
         return seq
 
     def object_cmd(op, kind, obj):
@@ -152,6 +152,31 @@ def verify(sock, keys, mode):
 
     def listing(ids):
         return struct.pack("<HH", 0, len(ids)) + b"".join(ids)
+
+    if mode.startswith("delete-"):
+        other = b"A" * 16
+        directory = object_cmd(0x9f, 2, b"\xff" * 16)
+        ids = [other] if mode == "delete-absent" else [tuid, other]
+        if mode == "delete-last":
+            ids = [tuid]
+        if mode == "delete-duplicate-id":
+            exchange(directory, listing([tuid, tuid]))
+            return seq
+        exchange(directory, listing(ids))
+        for template in sorted(ids):
+            payload = child if template == tuid else b"R" * 16
+            children = [payload, b"Q" * 16] if template == tuid and mode == "delete-shared" else [payload]
+            exchange(object_cmd(0x9f, 3, template), listing(children))
+            data = tags(template=template, finger=2 if template == tuid or mode == "delete-ambiguous" else 3)
+            exchange(object_cmd(0xa1, 3, payload), struct.pack("<II", 0, len(data)) + data)
+        if mode in ("delete-absent", "delete-shared", "delete-ambiguous"):
+            return seq
+        exchange(object_cmd(0xa3, 2, tuid), struct.pack("<HH", 0, 0 if mode == "delete-zero-count" else 1))
+        if mode != "delete-zero-count":
+            survivors = {"delete-one": [other], "delete-last": [], "delete-still-present": ids,
+                         "delete-wrong-survivor": [tuid]}[mode]
+            exchange(directory, listing(survivors))
+        return seq
 
     exchange(object_cmd(0x9f, 2, bytes([255]) * 16), listing([tuid]))
     children = [child, b"Q" * 16] if mode == "verify-directory-ambiguous" else [child]
@@ -231,8 +256,8 @@ def reader(sock, mode):
     if mode.startswith("handshake-"):
         return
     start = capture(sock, keys, mode) if mode.startswith("capture-") else 1
-    if mode.startswith("verify-"):
-        start = verify(sock, keys, mode)
+    if mode.startswith(("verify-", "delete-")):
+        start = print_operation(sock, keys, mode)
     previous = None
     for i in [0, 1]:
         seq = start + i
@@ -275,7 +300,9 @@ if __name__ == "__main__":
                  "verify-other-finger", "verify-other-account", "verify-other-subject-type",
                  "verify-other-template", "verify-zero-score", "verify-rejected", "verify-malformed-id",
                  "verify-malformed-dupe", "verify-malformed-truncated", "verify-low-quality",
-                 "verify-malformed-metric")
+                 "verify-malformed-metric", "delete-one", "delete-absent", "delete-shared",
+                 "delete-ambiguous", "delete-duplicate-id", "delete-wrong-serial", "delete-zero-count",
+                 "delete-still-present", "delete-wrong-survivor", "delete-last")
     for case in cases:
         run(sys.argv[1], case)
-    print(f"{len(cases)} native session, capture and verification scenarios passed")
+    print(f"{len(cases)} native session and biometric scenarios passed")

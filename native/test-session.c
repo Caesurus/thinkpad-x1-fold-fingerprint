@@ -182,6 +182,23 @@ main (int argc, char **argv)
     test_capture (session, mode, deadline);
   if (g_str_has_prefix (mode, "verify-"))
     test_verify (session, mode, deadline);
+  if (g_str_has_prefix (mode, "delete-"))
+    {
+      const struct fold_bio_identity print = {.guid = {0xb1}, .serial = {1,2,3,4,5,6}, .finger = 2};
+      gboolean ok = x1fold_delete_print (session, &print, deadline, NULL, &error);
+      if (g_str_equal (mode, "delete-one") || g_str_equal (mode, "delete-last") ||
+          g_str_equal (mode, "delete-absent"))
+        {
+          g_assert_no_error (error);
+          g_assert_true (ok);
+        }
+      else
+        {
+          g_assert_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA);
+          g_assert_false (ok);
+          g_clear_error (&error);
+        }
+    }
   const guint8 version_command = 1;
   for (int i = 0; i < 2; i++)
     {

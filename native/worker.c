@@ -28,8 +28,11 @@ watch_client (gpointer arg)
 }
 
 static enum fold_bio_event
-verify (int hid, const struct fold_bio_identity *print, GCancellable *cancel, GError **error)
+run_operation (int hid, const struct fold_bio_frame *request, GCancellable *cancel, GError **error)
 {
+  const struct fold_bio_identity *print = &request->print;
+  if (request->op != FOLD_VERIFY && request->op != FOLD_DELETE)
+    return FOLD_ERROR;
   const char *path = g_getenv ("CREDENTIALS_DIRECTORY");
   const char *names[] = {"sensor.cert", "host.cert", "host-key.pem"};
   int dir = path ? open (path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW) : -1;
@@ -73,14 +76,26 @@ verify (int hid, const struct fold_bio_identity *print, GCancellable *cancel, GE
       g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND, cancel, error);
   if (!session)
     goto done;
-  gboolean matched;
-  gboolean ok = x1fold_verify_print (session, print, g_get_monotonic_time () + 30 * G_TIME_SPAN_SECOND,
-                                     cancel, NULL, NULL, &matched, error);
+  gint64 deadline = g_get_monotonic_time () + 30 * G_TIME_SPAN_SECOND;
+  gboolean ok;
+  if (request->op == FOLD_VERIFY)
+    {
+      gboolean matched;
+      ok = x1fold_verify_print (session, print, deadline, cancel, NULL, NULL, &matched, error);
+      if (ok)
+        result = matched ? FOLD_MATCH : FOLD_NO_MATCH;
+    }
+  else
+    {
+      ok = x1fold_delete_print (session, print, deadline, cancel, error);
+      if (ok)
+        result = FOLD_DELETED;
+    }
   gboolean closed = x1fold_session_close (session, g_get_monotonic_time () + 3 * G_TIME_SPAN_SECOND,
                                           NULL, ok ? error : NULL);
   x1fold_session_free (session);
-  if (ok && closed)
-    result = matched ? FOLD_MATCH : FOLD_NO_MATCH;
+  if (!closed)
+    result = FOLD_ERROR;
 done:
   for (guint i = 0; i < G_N_ELEMENTS (fds); i++)
     if (fds[i] >= 0)
@@ -100,13 +115,13 @@ main (void)
   g_autoptr(GCancellable) cancel = g_cancellable_new ();
   struct monitor monitor = {channel, cancel};
   GThread *watcher = g_thread_new ("fprintd-disconnect", watch_client, &monitor);
-  frame.event = frame.op == FOLD_VERIFY ? verify (hid, &frame.print, cancel, &error) : FOLD_ERROR;
+  frame.event = run_operation (hid, &frame, cancel, &error);
   close (hid);
   gboolean sent = send (channel, &frame, sizeof frame, MSG_NOSIGNAL) == sizeof frame;
   shutdown (channel, SHUT_RDWR);
   g_thread_join (watcher);
   close (channel);
   if (error)
-    fprintf (stderr, "Fold verify: %s\n", error->message);
+    fprintf (stderr, "Fold biometric operation: %s\n", error->message);
   return !sent || frame.event == FOLD_ERROR;
 }
