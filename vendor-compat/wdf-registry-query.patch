@@ -1,0 +1,26 @@
+--- a/src/winapi/wdf/reg.c
++++ b/src/winapi/wdf/reg.c
+@@ -76,11 +76,21 @@
+     char *val_cname = winstr_to_str(val_name->Buffer);
+ 
+     size_t buf_size = val_len;
+-    if(!winreg_query_val(key->hkey, val_cname, value, &buf_size, (enum winreg_val_type*) val_type)) {
++    enum winreg_val_type type = 0;
++    extern DWORD __winfnc GetLastError(void);
++    winerr_clear();
++    if(!winreg_query_val(key->hkey, val_cname, value, &buf_size, &type)) {
++        DWORD error = GetLastError();
+         free(val_cname);
++        if(error == 2) return 0xc0000034; /* STATUS_OBJECT_NAME_NOT_FOUND */
++        if(error == 234) {
++            if(val_len_out) *val_len_out = (ULONG) buf_size;
++            return 0x80000005; /* STATUS_BUFFER_OVERFLOW */
++        }
+         return WINERR_SET_CODE;
+     }
+-    *val_len_out = (ULONG) buf_size;
++    if(val_len_out) *val_len_out = (ULONG) buf_size;
++    if(val_type) *val_type = (ULONG) type;
+ 
+     free(val_cname);
+     return STATUS_SUCCESS;

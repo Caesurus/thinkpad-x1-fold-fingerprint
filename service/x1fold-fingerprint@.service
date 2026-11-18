@@ -1,0 +1,32 @@
+[Unit]
+Description=Fold biometric transaction
+
+[Service]
+DynamicUser=yes
+User=x1fold-worker
+StandardInput=socket
+StandardOutput=null
+StandardError=journal
+ExecStart=/usr/bin/python3 -I /usr/local/libexec/x1fold-fingerprint/worker.py
+LoadCredential=smbios-entry:/sys/firmware/dmi/tables/smbios_entry_point
+LoadCredential=smbios-table:/sys/firmware/dmi/tables/DMI
+LoadCredentialEncrypted=x1fold-dpapi:/etc/credstore.encrypted/x1fold-fingerprint.cred
+StateDirectory=x1fold-fingerprint-worker
+StateDirectoryMode=0700
+RuntimeDirectory=x1fold-txn-%i
+RuntimeDirectoryMode=0700
+UMask=0077
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+LimitCORE=0
+RuntimeMaxSec=130s
+TimeoutStopSec=3s
