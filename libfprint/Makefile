@@ -34,7 +34,9 @@ $(BUILD_DIR)/test-print-identity: tests/print-identity.c print-identity.c print-
 $(BUILD_DIR)/test-transport: tests/transport.c transport.c transport.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(GIO_CFLAGS) tests/transport.c transport.c $(LDFLAGS) $(GIO_LIBS) -o "$@"
 
-check: all $(BUILD_DIR)/test-certificate $(BUILD_DIR)/test-transport $(BUILD_DIR)/test-biometric-ipc $(BUILD_DIR)/test-print-identity
+check: all $(BUILD_DIR)/test-host-proof $(BUILD_DIR)/test-handshake $(BUILD_DIR)/test-certificate $(BUILD_DIR)/test-transport $(BUILD_DIR)/test-biometric-ipc $(BUILD_DIR)/test-print-identity
+	$(BUILD_DIR)/test-host-proof
+	$(BUILD_DIR)/test-handshake
 	$(BUILD_DIR)/test-certificate
 	$(BUILD_DIR)/test-transport
 	$(BUILD_DIR)/test-biometric-ipc
@@ -52,7 +54,19 @@ $(BUILD_DIR)/transport.o: transport.c transport.h | $(BUILD_DIR)
 $(BUILD_DIR)/sensor-certificate.o: ../native/sensor-certificate.c ../native/sensor-certificate.h transport.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -fPIC $(GIO_CFLAGS) -c $< -o "$@"
 
-$(BUILD_DIR)/libx1fold-native.a: $(BUILD_DIR)/transport.o $(BUILD_DIR)/sensor-certificate.o
+$(BUILD_DIR)/host-proof.o: ../native/host-proof.c ../native/host-proof.h ../native/handshake.h transport.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -fPIC $(GIO_CFLAGS) -c $< -o "$@"
+
+$(BUILD_DIR)/handshake.o: ../native/handshake.c ../native/handshake.h transport.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -fPIC $(GIO_CFLAGS) -c $< -o "$@"
+
+$(BUILD_DIR)/test-host-proof: ../native/test-host-proof.c $(BUILD_DIR)/libx1fold-native.a
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(GIO_CFLAGS) $^ $(LDFLAGS) $(GIO_LIBS) $(CRYPTO_LIBS) -o "$@"
+
+$(BUILD_DIR)/test-handshake: ../native/test-handshake.c $(BUILD_DIR)/libx1fold-native.a
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(GIO_CFLAGS) $^ $(LDFLAGS) $(GIO_LIBS) $(CRYPTO_LIBS) -o "$@"
+
+$(BUILD_DIR)/libx1fold-native.a: $(BUILD_DIR)/transport.o $(BUILD_DIR)/sensor-certificate.o $(BUILD_DIR)/handshake.o $(BUILD_DIR)/host-proof.o
 	$(AR) rcs "$@" $^
 
 $(BUILD_DIR)/native-inspect: ../native/inspect.c $(BUILD_DIR)/libx1fold-native.a
