@@ -2,7 +2,7 @@
 /* The test supplies a synthetic sensor trust decision, idle feature status
  * and a packet-socket bridge for event-listener ioctls. It uses the production
  * transport for the full handshake, encrypted commands and HID notification reads. */
-#include "capture.h"
+#include "verify.h"
 #include <stdarg.h>
 #include <linux/hidraw.h>
 #include <sys/ioctl.h>
@@ -100,6 +100,26 @@ test_capture (X1FoldSession *session, const char *mode, gint64 deadline)
   g_assert_cmpint (ok, ==, error == NULL);
 }
 
+static void
+test_verify (X1FoldSession *session, const char *mode, gint64 deadline)
+{
+  const struct fold_bio_identity print = {.guid = {0xb1}, .serial = {1,2,3,4,5,6}, .finger = 2};
+  struct touch touch = {0};
+  g_autoptr(GError) error = NULL;
+  gboolean matched = TRUE;
+  gboolean ok = x1fold_verify_print (session, &print, deadline, NULL, ready, &touch, &matched, &error);
+  gboolean early = g_str_has_prefix (mode, "verify-directory-");
+  g_assert_cmpuint (touch.prompts, ==, early ? 0 : 1);
+  if (g_str_equal (mode, "verify-directory-missing"))
+    g_assert_error (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND);
+  else if (early || g_str_has_prefix (mode, "verify-malformed-"))
+    g_assert_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA);
+  else
+    g_assert_no_error (error);
+  g_assert_cmpint (ok, ==, error == NULL);
+  g_assert_cmpint (matched, ==, g_str_equal (mode, "verify-match"));
+}
+
 int
 main (int argc, char **argv)
 {
@@ -160,6 +180,8 @@ main (int argc, char **argv)
   g_assert_nonnull (session);
   if (g_str_has_prefix (mode, "capture-"))
     test_capture (session, mode, deadline);
+  if (g_str_has_prefix (mode, "verify-"))
+    test_verify (session, mode, deadline);
   const guint8 version_command = 1;
   for (int i = 0; i < 2; i++)
     {

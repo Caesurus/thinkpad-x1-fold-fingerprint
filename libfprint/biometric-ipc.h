@@ -40,6 +40,6 @@ void fold_bio_close(struct fold_bio_session *session);
 /* Broker side. Called with an accepted, connected Unix seqpacket socket.
  * Only requests from UID 0 are accepted. On success the caller owns both
  * descriptors; independently verify sensor identity against the opened fd
- * before any vendor I/O. Terminal replies require real WinBio results. */
+ * before sensor I/O. A match reply requires an authenticated reader result. */
 int fold_bio_accept(int rendezvous, struct fold_bio_frame *request,
                     int *private_socket, int *hidraw);

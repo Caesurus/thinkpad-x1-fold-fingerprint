@@ -4,32 +4,11 @@
 #include "capture.h"
 #include <errno.h>
 #include <fcntl.h>
-#include <openssl/pem.h>
+#include "credentials.h"
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
-
-static GBytes *
-certificate_fd (int fd, GError **error)
-{
-  guint8 record[400];
-  struct stat st;
-  if (fstat (fd, &st) || !S_ISREG (st.st_mode) || st.st_size != sizeof record ||
-      pread (fd, record, sizeof record, 0) != sizeof record)
-    {
-      g_set_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
-                   "Expected a 400-byte pairing certificate on fd %d", fd);
-      return NULL;
-    }
-  return g_bytes_new (record, sizeof record);
-}
-
-static int
-no_password_prompt (char *buf, int size, int writing, void *user)
-{
-  return -1;
-}
 
 static void
 prompt_touch (gpointer unused)
@@ -41,42 +20,17 @@ prompt_touch (gpointer unused)
 static gboolean
 inspect_pairing (int fd, const struct x1fold_version *expected, gboolean capture, GError **error)
 {
-  g_autoptr(GBytes) sensor = certificate_fd (4, error);
-  if (!sensor)
-    return FALSE;
-  g_autoptr(GBytes) host = certificate_fd (5, error);
-  if (!host)
-    return FALSE;
-  struct stat st;
-  if (fstat (6, &st) || !S_ISREG (st.st_mode) || st.st_size <= 0 || st.st_size > 16384)
-    {
-      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA,
-                           "Expected the paired host PEM key on fd 6");
-      return FALSE;
-    }
-  BIO *bio = BIO_new_fd (6, BIO_NOCLOSE);
-  EVP_PKEY *identity = bio ? PEM_read_bio_PrivateKey (bio, NULL, no_password_prompt, NULL) : NULL;
-  BIO_free (bio);
-  if (!identity)
-    {
-      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA, "Cannot load paired host identity");
-      return FALSE;
-    }
-  X1FoldSession *session = x1fold_session_open (fd, expected, sensor, host, identity,
+  X1FoldSession *session = x1fold_open_paired_fds (fd, expected, 4, 5, 6,
       g_get_monotonic_time () + 8 * G_TIME_SPAN_SECOND, NULL, error);
-  EVP_PKEY_free (identity);
   if (!session)
     return FALSE;
 
-  guint8 command = 1, reply[38];
-  gsize size;
   struct x1fold_version confirmed;
-  gboolean ok = x1fold_session_command (session, &command, 1, reply, sizeof reply, &size,
+  gboolean ok = x1fold_session_read_version (session, &confirmed,
       g_get_monotonic_time () + 5 * G_TIME_SPAN_SECOND, NULL, error);
   if (ok)
     {
-      if (!x1fold_parse_version (reply, size, &confirmed) ||
-          confirmed.product != expected->product || confirmed.build != expected->build ||
+      if (confirmed.product != expected->product || confirmed.build != expected->build ||
           confirmed.major != expected->major || confirmed.minor != expected->minor ||
           memcmp (expected->serial, confirmed.serial, sizeof expected->serial))
         {

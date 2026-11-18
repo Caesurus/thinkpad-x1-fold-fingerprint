@@ -5,7 +5,7 @@ The target is the USB-connected ThinkPad X1 Fold 16 Gen 1 keyboard, USB `17ef:61
 ## Build the native components
 
 ```sh
-make native native-inspect
+make native native-inspect native-worker
 make check
 ```
 
@@ -20,8 +20,9 @@ make check
 | Fresh pairing, ownership and key changes | OEM worker only | The OEM path obtained an accepted pairing. A Linux-native issuance path for a host certificate has yet to be established. The host certificate issuer and the sensor certificate issuer have different roles. |
 | Secure session and authenticated commands | Full native exchange, two commands and close tested against an independent software peer | Physical acceptance of this profile, retrieval of an authorized Fold pairing and a subsequent cold reconnect remain outstanding. |
 | Frame capture | Native acquisition, encrypted event queue and finish tested against a software peer | Validate the enrollment and verification capture parameters on the Fold. Frame-ready establishes that a sample is available to the next biometric operation. |
-| Enrollment and verification | OEM worker only | Trace sample acceptance, multi-touch commit and operation-scoped match results. Require a real right-index match and a rejection with a different finger. |
-| Record query and individual deletion | OEM worker only | Map per-record operations to the existing sensor, GUID and finger binding. Verify deletion using a separate test enrollment. |
+| Verify an existing enrollment | Native worker and scoped on-sensor match implemented | Software peer tests cover a match, rejection and identity mismatches. Validate the quality policy, record layout and results against a physical Fold. |
+| Enrollment | OEM worker only | Trace sample acceptance, multi-touch commit and duplicate detection. |
+| Record query and individual deletion | Native authenticated directory and enrollment metadata lookup | Confirm the stored identity format on the physical reader. Verify scoped deletion using a separate test enrollment. |
 | Firmware, configuration, diagnostics | Public firmware query only | The Fold DLL carries a signed main firmware update older than the measured build 3654703. Package applicability, update and recovery are separate from the authentication path. No native update was attempted. |
 
 ## DLL call paths
@@ -44,6 +45,14 @@ RVAs below refer to the Fold v153 PE images. The package and file SHA-256 values
 The adapter and HID DLL meet at Windows device control `0x442058`. In the HID dispatcher, the conditional at 0x814f selects the handler at 0x158e4. The handler invokes vtable slot 0x70. For the `CEisMisEIV` implementation, the vtable at 0xc9530 resolves that slot to 0x10f10, which invokes slot 0x110. That target is `CEisMisEIV::AuthenticateUserStorageOnSensor` at 0x10f40. Its direct call graph reaches `vfmUtilAuthPrep`, `vfmUtilAuthGetUpdatedTemplate` and `vfmUtilAuthUnPrep`. This ties the WinBio callback to a specific sensor-storage implementation. A hardware trace still needs to confirm the selected implementation and identify the authenticated response that supplies the verdict.
 
 The same HID vtable contains enrollment create (0x11d20), update (0x120b0), commit (0x11800), discard (0x11f90) and duplicate check (0x116e0). Capture and enrollment are separate state machines. Receiving an image or an accepted enrollment sample does not establish a successful identity check.
+
+### Native verification worker
+
+`build/native-worker` serves one verification request from the libfprint plugin through its existing Unix socket protocol. It accepts the already-open reader descriptor and the requested print identity. It runs as an unprivileged Linux process and links GLib/GIO and OpenSSL libcrypto. The build uses this repository's C sources and installed development packages. The worker expects the service manager to supply three protected files in `CREDENTIALS_DIRECTORY` named `sensor.cert`, `host.cert` and `host-key.pem`. The running release's ability to reconnect with its own credential storage does not supply those files. The installer selects the tested OEM-backed worker.
+
+The native code checks the serial inside the authenticated session, lists template IDs with DB2 command `0x9f` and reads their enrollment metadata with `0xa1`. The Fold HID DLL constructs these commands at RVAs 0xaebec and 0xaf239. The print stores a WinBio GUID and finger number. The sensor uses a separate 16-byte template ID. The worker requires one record binding all three, captures a fresh frame and addresses only that template in match command `0x99`. The Fold DLL builds the template-list form at 0xa5011–0xa50c5, allocates a 1602-byte reply and checks the 36-byte match-statistics length at 0xa5290. The C worker checks the authenticated reply's template ID, embedded template ID, GUID, finger and positive match indication before reporting a match. The sensor keeps the biometric comparison on board.
+
+The Fold DLL's image-quality check at RVA 0x50d40 reads a configurable threshold, defaults to 50 and permits thresholds from 30 to 99. The native prototype uses the default and requires a well-formed quality report from command `0x9d` with selector `0x10000`. The selector and WinBio enrollment metadata layout are based on the related Tudor protocol. Their applicability to the Fold's firmware and any device-specific threshold still require physical validation. The software peer checks the quality boundary, missing or conflicting identities, malformed replies, rejection and a positive result. The production fprintd-to-worker-to-reader transaction has yet to be demonstrated with native credentials.
 
 ## Certificate check
 

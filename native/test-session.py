@@ -64,8 +64,7 @@ def open_record(wire, key, salt, seq, kind):
     return AESGCM(key).decrypt(salt + wire[5:13], wire[13:], aad)
 
 
-def capture(sock, keys, mode):
-    seq = 1
+def capture(sock, keys, mode, seq=1):
     notice = bytes([16]) + bytes(19)
 
     def exchange(expected, response, hint=False):
@@ -123,6 +122,70 @@ def capture(sock, keys, mode):
     return seq
 
 
+def verify(sock, keys, mode):
+    seq = 1
+    tuid = b"T" * 16
+    child = b"P" * 16
+    guid = bytes([0xb1]) + bytes(15)
+
+    def exchange(expected, response):
+        nonlocal seq
+        assert open_record(command(sock), keys[:32], keys[64:68], seq, 23) == expected
+        respond(sock, send_record(23, response, keys[32:64], keys[68:], seq))
+        seq += 1
+
+    def tags(template=tuid, user=guid, finger=2, subject_type=2):
+        subject = struct.pack("<I", subject_type) + user + bytes(56)
+        fields = [(1, subject), (0, template), (2, bytes([finger]))]
+        return b"".join(struct.pack("<HI", tag, len(value)) + value for tag, value in fields)
+
+    version = bytearray(38)
+    version[18:24] = bytes([1, 2, 3, 4, 5, 6])
+    if mode == "verify-directory-serial":
+        version[18] ^= 1
+    exchange(b"\x01", version)
+    if mode == "verify-directory-serial":
+        return seq
+
+    def object_cmd(op, kind, obj):
+        return struct.pack("<BI", op, kind) + obj
+
+    def listing(ids):
+        return struct.pack("<HH", 0, len(ids)) + b"".join(ids)
+
+    exchange(object_cmd(0x9f, 2, bytes([255]) * 16), listing([tuid]))
+    children = [child, b"Q" * 16] if mode == "verify-directory-ambiguous" else [child]
+    exchange(object_cmd(0x9f, 3, tuid), listing(children))
+    for obj in children:
+        data = tags(finger=3) if mode == "verify-directory-missing" else tags()
+        exchange(object_cmd(0xa1, 3, obj), struct.pack("<II", 0, len(data)) + data)
+    if mode.startswith("verify-directory-"):
+        return seq
+    seq = capture(sock, keys, "capture-verify", seq)
+    quality = 49 if mode == "verify-low-quality" else 50
+    metric = 1 if mode == "verify-malformed-metric" else 0x10000
+    exchange(struct.pack("<BI", 0x9d, 0x10000), struct.pack("<HIIII", 0, metric, 8, quality, 0))
+    if mode in ("verify-low-quality", "verify-malformed-metric"):
+        return seq
+    header = b"Y" * 16 if mode == "verify-other-template" else tuid
+    data = tags(template=header, finger=3 if mode == "verify-other-finger" else 2,
+                user=b"A" * 16 if mode == "verify-other-account" else guid,
+                subject_type=3 if mode == "verify-other-subject-type" else 2)
+    if mode == "verify-malformed-dupe":
+        data += struct.pack("<HIB", 2, 1, 2)
+    if mode == "verify-malformed-truncated":
+        data += struct.pack("<HI", 5, 8)
+    if mode == "verify-malformed-id":
+        header = b"Z" * 16
+    score = 0 if mode == "verify-zero-score" else 100
+    result = (bytes(2) + header + struct.pack("<IIII", 36, 0, len(data), score)
+              + bytes(32) + data)
+    if mode == "verify-rejected":
+        result = struct.pack("<H", 0x509)
+    exchange(struct.pack("<BIII", 0x99, 1, 16, 0) + tuid, result)
+    return seq
+
+
 def reader(sock, mode):
     identity = ec.generate_private_key(ec.SECP256R1())
     sock.sendall(identity.public_key().public_bytes(serialization.Encoding.DER,
@@ -168,6 +231,8 @@ def reader(sock, mode):
     if mode.startswith("handshake-"):
         return
     start = capture(sock, keys, mode) if mode.startswith("capture-") else 1
+    if mode.startswith("verify-"):
+        start = verify(sock, keys, mode)
     previous = None
     for i in [0, 1]:
         seq = start + i
@@ -205,7 +270,12 @@ if __name__ == "__main__":
     cases = ("valid", "open-busy", "open-wrong-host", "handshake-wrong-tag", "handshake-wrong-finished", "handshake-no-change",
                  "record-replay", "record-wrong-tag", "close-invalid", "capture-verify", "capture-enroll", "capture-busy",
                  "capture-legacy", "capture-cancel", "capture-timeout", "capture-invalid-page",
-                 "capture-cancel-wait", "capture-denied", "capture-short-end")
+                 "capture-cancel-wait", "capture-denied", "capture-short-end", "verify-match",
+                 "verify-directory-serial", "verify-directory-missing", "verify-directory-ambiguous",
+                 "verify-other-finger", "verify-other-account", "verify-other-subject-type",
+                 "verify-other-template", "verify-zero-score", "verify-rejected", "verify-malformed-id",
+                 "verify-malformed-dupe", "verify-malformed-truncated", "verify-low-quality",
+                 "verify-malformed-metric")
     for case in cases:
         run(sys.argv[1], case)
-    print(f"{len(cases)} native session and capture scenarios passed")
+    print(f"{len(cases)} native session, capture and verification scenarios passed")

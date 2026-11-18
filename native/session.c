@@ -270,6 +270,19 @@ x1fold_session_command (X1FoldSession *s, const guint8 *command, gsize size, gui
 }
 
 gboolean
+x1fold_session_read_version (X1FoldSession *s, struct x1fold_version *version, gint64 deadline,
+                             GCancellable *cancel, GError **error)
+{
+  const guint8 cmd = 1;
+  guint8 reply[38];
+  gsize size;
+  if (!x1fold_session_command (s, &cmd, 1, reply, sizeof reply, &size, deadline, cancel, error))
+    return FALSE;
+  return x1fold_parse_version (reply, size, version) ||
+         failure (error, "Invalid authenticated firmware response");
+}
+
+gboolean
 x1fold_session_listen (X1FoldSession *s, gboolean listen, GError **error)
 {
   if (listen && !s->active)
