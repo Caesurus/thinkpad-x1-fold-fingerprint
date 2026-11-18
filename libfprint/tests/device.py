@@ -28,10 +28,11 @@ def version(serial=bytes(range(1, 7))):
 
 
 class HidIoctls(UMockdev.IoctlBase):
-    def __init__(self, reports, descriptor=DESCRIPTOR):
+    def __init__(self, reports, descriptor=DESCRIPTOR, feature=None):
         super().__init__()
         self.reports = iter(reports)
         self.descriptor = descriptor
+        self.feature = feature
         self.writes = []
 
     def do_handle_write(self, client):
@@ -53,6 +54,11 @@ class HidIoctls(UMockdev.IoctlBase):
             0x90044802: struct.pack("=I", len(self.descriptor)) + self.descriptor,
         }
         request = client.get_request()
+        if request == 0xc0144807 and self.feature is not None:
+            argument = client.get_arg().resolve(0, 20)
+            argument.update(0, self.feature)
+            client.complete(len(self.feature), 0)
+            return True
         if request not in responses:
             client.complete(-1, errno.ENOTTY)
             return True
@@ -164,6 +170,26 @@ class DriverTests(unittest.TestCase):
                     ))
         finally:
             device.close_sync()
+
+    def test_abandoned_session_recovery(self):
+        alert = (b"\x0fsynaptic" + struct.pack("<II", 6, 2) + b"\x15\x03").ljust(64, b"\0")
+        idle = (b"\x11synaptic" + struct.pack("<I", 1)).ljust(20, b"\0")
+        mock = HidIoctls([version(), alert, version()], feature=idle)
+        device = self.sensor(mock)
+        device.open_sync()
+        device.close_sync()
+        self.assertEqual(mock.writes, [REQUEST] * 3)
+
+    def test_alert_does_not_retry_unknown_or_active_session(self):
+        alert = (b"\x0fsynaptic" + struct.pack("<II", 6, 2) + b"\x15\x03").ljust(64, b"\0")
+        active = (b"\x11synaptic" + struct.pack("<I", 1) + b"\x01").ljust(20, b"\0")
+        mock = HidIoctls([version(), alert, alert, alert], feature=active)
+        device = self.sensor(mock)
+        for feature in (active, active[:14], bytes(20)):
+            mock.feature = feature
+            with self.assertRaises(GLib.Error):
+                device.open_sync()
+        self.assertEqual(mock.writes, [REQUEST] * 4)
 
     def test_malformed_reply_fails_open(self):
         mock = HidIoctls([version(), bytes(64)])

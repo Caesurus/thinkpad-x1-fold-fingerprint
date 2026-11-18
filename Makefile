@@ -15,3 +15,10 @@ worker:
 check:
 	$(MAKE) -C libfprint BUILD_DIR="$(abspath $(BUILD_DIR))" check
 	$(PYTHON) -B -m unittest discover -s vendor-host -p test_console_session.py
+
+.PHONY: native native-inspect
+native:
+	$(MAKE) -C libfprint BUILD_DIR="$(abspath $(BUILD_DIR))" "$(abspath $(BUILD_DIR))/libx1fold-native.a"
+
+native-inspect:
+	$(MAKE) -C libfprint BUILD_DIR="$(abspath $(BUILD_DIR))" "$(abspath $(BUILD_DIR))/native-inspect"

@@ -35,8 +35,8 @@ sys_error (const char *operation, GError **error)
   return FALSE;
 }
 
-static gboolean
-check_fd (int fd, dev_t expected, GError **error)
+gboolean
+x1fold_check_fd (int fd, dev_t expected, GError **error)
 {
   struct stat st;
   struct hidraw_devinfo info;
@@ -60,97 +60,200 @@ mismatch:
   return FALSE;
 }
 
-gboolean
-x1fold_read_serial (int fd, guint8 serial[6], GCancellable *cancellable, GError **error)
+static gboolean
+invalid_reply (GError **error)
 {
-  /* Tudor GET_VERSION, single fragment, index 0xff, first and last flags. */
-  const guint8 request[20] = { 0x0e, 's','y','n','a','p','t','i','c', 3,0,0,0, 0xff,0xc0, 1 };
-  const guint8 header[] = { 0x0f, 's','y','n','a','p','t','i','c', 42,0,0,0, 38,0,0,0, 0,0 };
-  gint64 deadline = g_get_monotonic_time () + 5 * G_TIME_SPAN_SECOND;
-  gboolean sent = FALSE, recovered = FALSE;
+  g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA, "Invalid Tudor reply envelope");
+  return FALSE;
+}
+
+static guint32
+read_le32 (const guint8 *bytes)
+{
+  guint32 value;
+  memcpy (&value, bytes, sizeof value);
+  return GUINT32_FROM_LE (value);
+}
+
+static ssize_t
+transfer_report (int fd, guint8 *report, gsize size, gboolean writing, gint64 deadline,
+                 GCancellable *cancellable, GError **error)
+{
+  struct pollfd pfd = { .fd = fd, .events = writing ? POLLOUT : POLLIN };
   while (TRUE)
     {
       if (g_cancellable_set_error_if_cancelled (cancellable, error))
-        return FALSE;
+        return -1;
       gint64 remaining = deadline - g_get_monotonic_time ();
       if (remaining <= 0)
         {
-          g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_TIMED_OUT, "GET_VERSION timed out");
-          return FALSE;
+          g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_TIMED_OUT, "Fingerprint HID timed out");
+          return -1;
         }
-      struct pollfd pfd = { .fd = fd, .events = sent ? POLLIN : POLLOUT };
-      int rc = poll (&pfd, 1, MIN (100, (remaining + 999) / 1000));
+      int rc = poll (&pfd, 1, (MIN (remaining, 100000) + 999) / 1000);
       if (rc < 0 && errno != EINTR)
-        return sys_error ("poll", error);
+        {
+          sys_error ("poll fingerprint HID", error);
+          return -1;
+        }
       if (rc <= 0)
         continue;
       if (!(pfd.revents & pfd.events))
         {
           g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_CLOSED, "Fingerprint HID disconnected");
-          return FALSE;
+          return -1;
         }
-      if (!sent)
-        {
-          ssize_t n = write (fd, request, sizeof request);
-          if (n < 0 && (errno == EINTR || errno == EAGAIN))
-            continue;
-          if (n < 0)
-            return sys_error ("write GET_VERSION", error);
-          if (n != sizeof request)
-            {
-              g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_FAILED, "Short HID write");
-              return FALSE;
-            }
-          sent = TRUE;
-          continue;
-        }
-
-      guint8 report[65];
-      ssize_t n = read (fd, report, sizeof report);
+      ssize_t n = writing ? write (fd, report, size) : read (fd, report, size);
       if (n < 0 && (errno == EINTR || errno == EAGAIN))
         continue;
       if (n < 0)
-        return sys_error ("read GET_VERSION", error);
-      if (n == 20 && report[0] == 0x10)
-        continue;
-      /* After an interrupted worker, GET_VERSION can produce a TLS alert and
-       * close its abandoned session. Confirm the hardware flag before retrying. */
-      if (!recovered && n == 64 && memcmp (report, header, 9) == 0)
+        sys_error (writing ? "write fingerprint HID" : "read fingerprint HID", error);
+      return n;
+    }
+}
+
+gboolean
+x1fold_exchange (int fd, const guint8 *command, gsize command_len,
+                 guint8 *reply, gsize capacity, gsize *reply_len, gint64 deadline,
+                 GCancellable *cancellable, GError **error)
+{
+  *reply_len = 0;
+  if (!command || !command_len || command_len > 248u * 16384u || (!reply && capacity))
+    {
+      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT, "Invalid Tudor exchange");
+      return FALSE;
+    }
+  for (gsize offset = 0; offset < command_len; offset += 248)
+    {
+      guint8 envelope[14 + 248] = "synaptic";
+      gsize chunk = MIN (248, command_len - offset);
+      guint32 fragment_size = GUINT32_TO_LE (chunk + 2);
+      guint16 sequence = offset + chunk == command_len ? 0x80ff : offset / 248;
+      sequence = GUINT16_TO_LE (sequence | (offset == 0 ? 0x4000 : 0));
+      memcpy (envelope + 8, &fragment_size, 4);
+      memcpy (envelope + 12, &sequence, 2);
+      memcpy (envelope + 14, command + offset, chunk);
+      for (gsize pos = 0; pos < 14 + chunk; pos += 19)
         {
-          guint32 size, chunk;
-          memcpy (&size, report + 13, 4);
-          memcpy (&chunk, report + 9, 4);
-          size = GUINT32_FROM_LE (size);
-          chunk = GUINT32_FROM_LE (chunk);
-          gboolean alert = size >= 5 && size <= 47 && report[17] == 21 &&
-                           report[18] == 3 && ((((guint) report[20] << 8) | report[21]) == size - 5);
-          gboolean abandoned = size == 2 && report[17] == 0x15 && report[18] == 3;
-          if (chunk == size + 4 && (alert || abandoned))
+          guint8 report[20] = {0x0e};
+          memcpy (report + 1, envelope + pos, MIN (19, 14 + chunk - pos));
+          ssize_t n = transfer_report (fd, report, sizeof report, TRUE, deadline, cancellable, error);
+          if (n < 0)
+            return FALSE;
+          if (n != sizeof report)
             {
-              guint8 feature[20] = {0x11};
-              if (ioctl (fd, HIDIOCGFEATURE (sizeof feature), feature) == sizeof feature &&
-                  memcmp (feature + 1, "synaptic", 8) == 0 && feature[9] >= 1 && feature[9] <= 7 &&
-                  !feature[10] && !feature[11] && !feature[12] && !feature[13])
-                {
-                  recovered = TRUE;
-                  sent = FALSE;
-                  continue;
-                }
+              g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_FAILED, "Short fingerprint HID write");
+              return FALSE;
             }
         }
-      if (n != 64 || memcmp (report, header, sizeof header) != 0)
+    }
+
+  gsize total = 0, used = 0, fragment_left = 0;
+  while (TRUE)
+    {
+      guint8 report[65];
+      ssize_t n = transfer_report (fd, report, sizeof report, FALSE, deadline, cancellable, error);
+      if (n < 0)
+        return FALSE;
+      if (n == 20 && report[0] == 0x10)
+        continue;
+      if (n != 64 || report[0] != 0x0f)
+        return invalid_reply (error);
+      gsize pos = 1;
+      if (!fragment_left)
         {
-          g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA, "Invalid Tudor GET_VERSION response");
+          if (memcmp (report + 1, "synaptic", 8))
+            return invalid_reply (error);
+          guint32 fragment = read_le32 (report + 9);
+          guint prefix = used == 0 ? 4 : 0;
+          pos = 13 + prefix;
+          if (prefix)
+            total = read_le32 (report + 13);
+          if (total > capacity || fragment != MIN (249u - prefix, total - used) + prefix)
+            return invalid_reply (error);
+          fragment_left = fragment - prefix;
+        }
+      gsize take = MIN (64 - pos, fragment_left);
+      if (take)
+        memcpy (reply + used, report + pos, take);
+      used += take;
+      fragment_left -= take;
+      if (used == total)
+        {
+          *reply_len = total;
+          return TRUE;
+        }
+    }
+}
+
+gboolean
+x1fold_session_status (int fd, gboolean *active, GError **error)
+{
+  guint8 feature[20] = {0x11};
+  int n = ioctl (fd, HIDIOCGFEATURE (sizeof feature), feature);
+  if (n < 0)
+    return sys_error ("read session status", error);
+  if (n != sizeof feature || feature[0] != 0x11 || memcmp (feature + 1, "synaptic", 8) ||
+      read_le32 (feature + 9) < 1 || read_le32 (feature + 9) > 7)
+    return invalid_reply (error);
+  *active = feature[13] != 0;
+  return TRUE;
+}
+
+gboolean
+x1fold_read_version (int fd, struct x1fold_version *info, gboolean recover,
+                     GCancellable *cancellable, GError **error)
+{
+  const guint8 version = 1;
+  gint64 deadline = g_get_monotonic_time () + 5 * G_TIME_SPAN_SECOND;
+  for (guint attempt = 0; attempt < 2; attempt++)
+    {
+      guint8 reply[47];
+      gsize size;
+      if (!x1fold_exchange (fd, &version, 1, reply, sizeof reply, &size, deadline, cancellable, error))
+        {
+          g_prefix_error (error, "Invalid Tudor GET_VERSION exchange: ");
           return FALSE;
         }
-      /* Status, build date, build number, eight version/product bytes, then serial. */
-      memcpy (serial, report + 35, 6);
-      guint32 build;
-      memcpy (&build, report + 23, sizeof build);
-      g_debug ("X1 Fold Tudor firmware %u.%u build %u product 0x%02x",
-               report[27], report[28], GUINT32_FROM_LE (build), report[30]);
-      return TRUE;
+      if (size == 38 && reply[0] == 0 && reply[1] == 0)
+        {
+          *info = (struct x1fold_version) {
+            .build = read_le32 (reply + 6), .major = reply[10], .minor = reply[11],
+            .product = reply[13], .security = (guint16) (reply[24] | (reply[25] << 8)),
+            .firmware_interface = reply[30], .provisioning = reply[37] & 0x0f
+          };
+          memcpy (info->serial, reply + 18, sizeof info->serial);
+          g_debug ("X1 Fold Tudor firmware %u.%u build %u product 0x%02x",
+                   reply[10], reply[11], read_le32 (reply + 6), reply[13]);
+          return TRUE;
+        }
+      /* A previous worker may have exited with an active session. Retry only
+       * after a recognized alert and an independent inactive status read. */
+      gboolean alert = size >= 5 && reply[0] == 21 && reply[1] == 3 &&
+                       ((((guint) reply[3] << 8) | reply[4]) == size - 5);
+      gboolean abandoned = size == 2 && reply[0] == 0x15 && reply[1] == 3;
+      gboolean active;
+      if (recover && attempt == 0 && (alert || abandoned))
+        {
+          if (!x1fold_session_status (fd, &active, error))
+            return FALSE;
+          if (!active)
+            continue;
+        }
+      break;
     }
+  g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA, "Invalid Tudor GET_VERSION response");
+  return FALSE;
+}
+
+gboolean
+x1fold_read_serial (int fd, guint8 serial[6], GCancellable *cancellable, GError **error)
+{
+  struct x1fold_version info;
+  if (!x1fold_read_version (fd, &info, TRUE, cancellable, error))
+    return FALSE;
+  memcpy (serial, info.serial, sizeof info.serial);
+  return TRUE;
 }
 
 int
@@ -162,7 +265,7 @@ x1fold_open_sensor (const gchar *path, dev_t expected, guint8 serial[6], GCancel
       sys_error ("open fingerprint HID", error);
       return -1;
     }
-  if (!check_fd (fd, expected, error) || !x1fold_read_serial (fd, serial, cancellable, error))
+  if (!x1fold_check_fd (fd, expected, error) || !x1fold_read_serial (fd, serial, cancellable, error))
     {
       close (fd);
       return -1;
