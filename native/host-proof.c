@@ -16,15 +16,24 @@ coordinate_matches (EVP_PKEY *key, const char *name, const guint8 *coordinate)
 }
 
 gboolean
+x1fold_host_public_matches (const guint8 *cert, gsize cert_len, EVP_PKEY *host_identity)
+{
+  char group[80];
+  size_t len;
+  return cert && cert_len == 400 && !memcmp (cert, "\x3f\x5f\x17\x00", 4) &&
+         host_identity && EVP_PKEY_is_a (host_identity, "EC") &&
+         EVP_PKEY_get_group_name (host_identity, group, sizeof group, &len) == 1 &&
+         OBJ_txt2nid (group) == NID_X9_62_prime256v1 &&
+         coordinate_matches (host_identity, OSSL_PKEY_PARAM_EC_PUB_X, cert + 4) &&
+         coordinate_matches (host_identity, OSSL_PKEY_PARAM_EC_PUB_Y, cert + 72);
+}
+
+gboolean
 x1fold_check_host_identity (const guint8 *cert, gsize cert_len, EVP_PKEY *host_identity,
                             GError **error)
 {
-  if (!cert || cert_len != 400 ||
-      memcmp (cert, "\x3f\x5f\x17\x00", 4) || cert[141] != 2 ||
-      cert[142] != 32 || cert[143] != 0 || !host_identity ||
-      !EVP_PKEY_is_a (host_identity, "EC") ||
-      !coordinate_matches (host_identity, OSSL_PKEY_PARAM_EC_PUB_X, cert + 4) ||
-      !coordinate_matches (host_identity, OSSL_PKEY_PARAM_EC_PUB_Y, cert + 72))
+  if (!x1fold_host_public_matches (cert, cert_len, host_identity) ||
+      cert[141] != 2 || cert[142] != 32 || cert[143] != 0)
     {
       g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
                            "Expected a returned host certificate and its matching signing key");

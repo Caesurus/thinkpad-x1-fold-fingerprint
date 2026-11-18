@@ -34,11 +34,12 @@ $(BUILD_DIR)/test-print-identity: tests/print-identity.c print-identity.c print-
 $(BUILD_DIR)/test-transport: tests/transport.c transport.c transport.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(GIO_CFLAGS) tests/transport.c transport.c $(LDFLAGS) $(GIO_LIBS) -o "$@"
 
-check: all $(BUILD_DIR)/native-worker $(BUILD_DIR)/test-worker $(BUILD_DIR)/test-session $(BUILD_DIR)/test-host-proof $(BUILD_DIR)/test-handshake $(BUILD_DIR)/test-certificate $(BUILD_DIR)/test-transport $(BUILD_DIR)/test-biometric-ipc $(BUILD_DIR)/test-print-identity
+check: all $(BUILD_DIR)/native-worker $(BUILD_DIR)/test-worker $(BUILD_DIR)/test-session $(BUILD_DIR)/test-host-proof $(BUILD_DIR)/test-handshake $(BUILD_DIR)/test-certificate $(BUILD_DIR)/test-pairing $(BUILD_DIR)/test-transport $(BUILD_DIR)/test-biometric-ipc $(BUILD_DIR)/test-print-identity
 	$(PYTHON) -B ../native/test-session.py "$(BUILD_DIR)/test-session" "$(BUILD_DIR)/test-worker"
 	$(BUILD_DIR)/test-host-proof
 	$(BUILD_DIR)/test-handshake
 	$(BUILD_DIR)/test-certificate
+	$(BUILD_DIR)/test-pairing
 	$(BUILD_DIR)/test-transport
 	$(BUILD_DIR)/test-biometric-ipc
 	$(PRIVATE_DRIVER) FP_TOD_KEEP_MODULES_OPEN=TRUE $(UMOCKDEV_WRAPPER) $(PYTHON) tests/device.py -v
@@ -85,7 +86,13 @@ $(BUILD_DIR)/session.o: ../native/session.c ../native/session.h ../native/sensor
 $(BUILD_DIR)/test-session: ../native/test-session.c $(BUILD_DIR)/libx1fold-native.a
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(GIO_CFLAGS) $^ $(LDFLAGS) -Wl,--wrap=x1fold_sensor_public_key,--wrap=x1fold_session_status,--wrap=ioctl $(GIO_LIBS) $(CRYPTO_LIBS) -o "$@"
 
-$(BUILD_DIR)/libx1fold-native.a: $(BUILD_DIR)/credentials.o $(BUILD_DIR)/enroll.o $(BUILD_DIR)/verify.o $(BUILD_DIR)/capture.o $(BUILD_DIR)/session.o $(BUILD_DIR)/transport.o $(BUILD_DIR)/sensor-certificate.o $(BUILD_DIR)/handshake.o $(BUILD_DIR)/host-proof.o
+$(BUILD_DIR)/pairing.o: ../native/pairing.c ../native/pairing.h ../native/host-proof.h ../native/sensor-certificate.h transport.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -fPIC $(GIO_CFLAGS) -c $< -o "$@"
+
+$(BUILD_DIR)/test-pairing: ../native/test-pairing.c $(BUILD_DIR)/libx1fold-native.a
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(GIO_CFLAGS) $^ $(LDFLAGS) -Wl,--wrap=x1fold_check_fd,--wrap=x1fold_session_status,--wrap=x1fold_exchange $(GIO_LIBS) $(CRYPTO_LIBS) -o "$@"
+
+$(BUILD_DIR)/libx1fold-native.a: $(BUILD_DIR)/pairing.o $(BUILD_DIR)/credentials.o $(BUILD_DIR)/enroll.o $(BUILD_DIR)/verify.o $(BUILD_DIR)/capture.o $(BUILD_DIR)/session.o $(BUILD_DIR)/transport.o $(BUILD_DIR)/sensor-certificate.o $(BUILD_DIR)/handshake.o $(BUILD_DIR)/host-proof.o
 	$(AR) rcs "$@" $^
 
 $(BUILD_DIR)/native-inspect: ../native/inspect.c $(BUILD_DIR)/libx1fold-native.a

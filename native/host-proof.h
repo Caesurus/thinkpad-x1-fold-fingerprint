@@ -3,6 +3,8 @@
 #include "handshake.h"
 #include <openssl/evp.h>
 
+gboolean x1fold_host_public_matches (const guint8 *certificate, gsize cert_len,
+                                    EVP_PKEY *host_identity);
 gboolean x1fold_check_host_identity (const guint8 *certificate, gsize cert_len,
                                      EVP_PKEY *host_identity, GError **error);
 
