@@ -113,9 +113,9 @@ transfer_report (int fd, guint8 *report, gsize size, gboolean writing, gint64 de
 }
 
 gboolean
-x1fold_exchange (int fd, const guint8 *command, gsize command_len,
-                 guint8 *reply, gsize capacity, gsize *reply_len, gint64 deadline,
-                 GCancellable *cancellable, GError **error)
+x1fold_exchange_notified (int fd, const guint8 *command, gsize command_len,
+                          guint8 *reply, gsize capacity, gsize *reply_len, gint64 deadline,
+                          GCancellable *cancellable, gboolean *notified, GError **error)
 {
   *reply_len = 0;
   if (!command || !command_len || command_len > 248u * 16384u || (!reply && capacity))
@@ -156,7 +156,11 @@ x1fold_exchange (int fd, const guint8 *command, gsize command_len,
       if (n < 0)
         return FALSE;
       if (n == 20 && report[0] == 0x10)
-        continue;
+        {
+          if (notified)
+            *notified = TRUE;
+          continue;
+        }
       if (n != 64 || report[0] != 0x0f)
         return invalid_reply (error);
       gsize pos = 1;
@@ -184,6 +188,43 @@ x1fold_exchange (int fd, const guint8 *command, gsize command_len,
           return TRUE;
         }
     }
+}
+
+gboolean
+x1fold_exchange (int fd, const guint8 *command, gsize command_len,
+                 guint8 *reply, gsize capacity, gsize *reply_len, gint64 deadline,
+                 GCancellable *cancellable, GError **error)
+{
+  return x1fold_exchange_notified (fd, command, command_len, reply, capacity, reply_len,
+                                   deadline, cancellable, NULL, error);
+}
+
+gboolean
+x1fold_event_listen (int fd, gboolean listen, GError **error)
+{
+  guint8 report[20] = {0x11};
+  if (listen)
+    memcpy (report + 1, "wait event", 10);
+  else
+    memcpy (report + 1, "end event", 9);
+  int n = ioctl (fd, HIDIOCSFEATURE (sizeof report), report);
+  if (n < 0)
+    return sys_error ("set Fold event listener", error);
+  if (n != sizeof report)
+    return invalid_reply (error);
+  return TRUE;
+}
+
+gboolean
+x1fold_read_notification (int fd, gint64 deadline, GCancellable *cancel, GError **error)
+{
+  guint8 report[65];
+  ssize_t n = transfer_report (fd, report, sizeof report, FALSE, deadline, cancel, error);
+  if (n < 0)
+    return FALSE;
+  if (n != 20 || report[0] != 0x10)
+    return invalid_reply (error);
+  return TRUE;
 }
 
 gboolean

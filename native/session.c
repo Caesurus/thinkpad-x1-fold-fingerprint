@@ -15,7 +15,7 @@ struct record_keys {
 struct x1fold_session {
   struct record_keys tx, rx;
   int fd;
-  gboolean active;
+  gboolean active, notification_pending;
 };
 
 static gboolean
@@ -229,14 +229,22 @@ record_exchange (X1FoldSession *s, guint8 type, const guint8 *command, gsize siz
       g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT, "Invalid Tudor record size");
       return FALSE;
     }
+  if (g_cancellable_set_error_if_cancelled (cancel, error))
+    return FALSE;
+  if (g_get_monotonic_time () >= deadline)
+    {
+      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_TIMED_OUT, "Tudor command deadline expired");
+      return FALSE;
+    }
   s->active = FALSE;
   g_autofree guint8 *request = g_malloc (RECORD_OVERHEAD + size);
   g_autofree guint8 *wire = g_malloc (RECORD_OVERHEAD + capacity);
   if (!seal (s, type, command, size, request))
     return failure (error, "Encrypting Tudor record failed");
   gsize got;
-  if (!x1fold_exchange (s->fd, request, RECORD_OVERHEAD + size, wire, RECORD_OVERHEAD + capacity,
-                        &got, deadline, cancel, error))
+  if (!x1fold_exchange_notified (s->fd, request, RECORD_OVERHEAD + size, wire,
+                                 RECORD_OVERHEAD + capacity, &got, deadline, cancel,
+                                 &s->notification_pending, error))
     return FALSE;
   guint8 *plain = OPENSSL_malloc (MAX (capacity, 1));
   if (!plain || !unseal (s, type, wire, got, plain))
@@ -259,6 +267,32 @@ x1fold_session_command (X1FoldSession *s, const guint8 *command, gsize size, gui
 {
   return record_exchange (s, APPLICATION, command, size, reply, capacity, received, deadline,
                           cancel, error);
+}
+
+gboolean
+x1fold_session_listen (X1FoldSession *s, gboolean listen, GError **error)
+{
+  if (listen && !s->active)
+    {
+      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_CLOSED, "Tudor session is closed");
+      return FALSE;
+    }
+  s->notification_pending = FALSE;
+  return x1fold_event_listen (s->fd, listen, error);
+}
+
+gboolean
+x1fold_session_wait_notification (X1FoldSession *s, gint64 deadline, GCancellable *cancel,
+                                  GError **error)
+{
+  if (g_cancellable_set_error_if_cancelled (cancel, error))
+    return FALSE;
+  if (s->notification_pending)
+    {
+      s->notification_pending = FALSE;
+      return TRUE;
+    }
+  return x1fold_read_notification (s->fd, deadline, cancel, error);
 }
 
 gboolean

@@ -64,6 +64,65 @@ def open_record(wire, key, salt, seq, kind):
     return AESGCM(key).decrypt(salt + wire[5:13], wire[13:], aad)
 
 
+def capture(sock, keys, mode):
+    seq = 1
+    notice = bytes([16]) + bytes(19)
+
+    def exchange(expected, response, hint=False):
+        nonlocal seq
+        req = open_record(command(sock), keys[:32], keys[64:68], seq, 23)
+        assert req == expected, (req.hex(), expected.hex())
+        if hint:
+            sock.sendall(notice)
+        respond(sock, send_record(23, response, keys[32:64], keys[68:], seq))
+        seq += 1
+
+    def configure(mask, cursor):
+        words = [mask, 0, 0, 0, mask, 0, 0, 0, 0 if mask else 4]
+        exchange(b"\x86" + struct.pack("<9I", *words), bytes(64) + struct.pack("<H", cursor))
+
+    def page(cursor, events, pending=0, legacy=False, hint=False):
+        request = struct.pack("<BHH", 0x87, cursor, 32)
+        if not legacy:
+            request += struct.pack("<I", 1)
+        body = struct.pack("<HHH", 0, len(events), pending)
+        body += b"".join(bytes([kind]) + bytes(11) for kind in events)
+        exchange(request, body, hint)
+
+    configure(1 << 24, 65535)
+    acquire = struct.pack("<BII", 0x80, 12 if mode == "capture-enroll" else 0x1014, 1)
+    acquire += bytes.fromhex("0100000801010100")
+    if mode == "capture-denied":
+        exchange(acquire, bytes.fromhex("0104"))
+        configure(0, 0)
+        return seq
+    if mode == "capture-busy":
+        exchange(acquire, bytes.fromhex("ea06"))
+    exchange(acquire, bytes(2))
+    configure((1 << 24) | 2, 65535)
+    assert sock.recv(20) == b"\x11wait event".ljust(20, b"\0")
+    if mode == "capture-timeout":
+        page(65535, [], hint=True)  # An untrusted wake-up alone cannot complete capture.
+        page(65535, [1])            # Finger-down alone is also insufficient.
+    elif mode == "capture-cancel-wait":
+        page(65535, [])
+    elif mode == "capture-legacy":
+        exchange(bytes.fromhex("87ffff200001000000"), bytes.fromhex("0504"))
+        page(65535, [1], pending=2, legacy=True)
+        page(0, [24], pending=1, legacy=True)
+    elif mode == "capture-invalid-page":
+        exchange(bytes.fromhex("87ffff200001000000"), bytes.fromhex("000002000000"))
+    elif mode != "capture-cancel":
+        page(65535, [24], hint=True)  # Interleaved notification arrives before the reply.
+        page(0, [], hint=False)       # Must consume the latched hint, then wait again.
+        sock.sendall(notice)
+        page(0, [1])
+    assert sock.recv(20) == b"\x11end event".ljust(20, b"\0")
+    configure(0, 0)
+    exchange(b"\x81", bytes(2))
+    return seq
+
+
 def reader(sock, mode):
     identity = ec.generate_private_key(ec.SECP256R1())
     sock.sendall(identity.public_key().public_bytes(serialization.Encoding.DER,
@@ -108,10 +167,12 @@ def reader(sock, mode):
     respond(sock, (change if mode != "handshake-no-change" else b"") + sealed)
     if mode.startswith("handshake-"):
         return
+    start = capture(sock, keys, mode) if mode.startswith("capture-") else 1
     previous = None
-    for seq in [1, 2]:
+    for i in [0, 1]:
+        seq = start + i
         assert open_record(command(sock), keys[:32], keys[64:68], seq, 23) == b"\x01"
-        body = bytes(range(seq - 1, seq + 37))
+        body = bytes(range(i, i + 38))
         reply = send_record(23, body, keys[32:64], keys[68:], seq)
         if seq == 2 and mode == "record-replay":
             reply = previous
@@ -121,9 +182,9 @@ def reader(sock, mode):
         previous = reply
     if mode.startswith("record-"):
         return
-    assert open_record(command(sock), keys[:32], keys[64:68], 3, 21) == b"\x01\x00"
+    assert open_record(command(sock), keys[:32], keys[64:68], start + 2, 21) == b"\x01\x00"
     alert = b"\x02\x28" if mode == "close-invalid" else b"\x01\x00"
-    respond(sock, send_record(21, alert, keys[32:64], keys[68:], 3))
+    respond(sock, send_record(21, alert, keys[32:64], keys[68:], start + 2))
 
 
 def run(exe, mode):
@@ -141,7 +202,10 @@ def run(exe, mode):
 
 
 if __name__ == "__main__":
-    for case in ("valid", "open-busy", "open-wrong-host", "handshake-wrong-tag", "handshake-wrong-finished", "handshake-no-change",
-                 "record-replay", "record-wrong-tag", "close-invalid"):
+    cases = ("valid", "open-busy", "open-wrong-host", "handshake-wrong-tag", "handshake-wrong-finished", "handshake-no-change",
+                 "record-replay", "record-wrong-tag", "close-invalid", "capture-verify", "capture-enroll", "capture-busy",
+                 "capture-legacy", "capture-cancel", "capture-timeout", "capture-invalid-page",
+                 "capture-cancel-wait", "capture-denied", "capture-short-end")
+    for case in cases:
         run(sys.argv[1], case)
-    print("9 native session scenarios passed")
+    print(f"{len(cases)} native session and capture scenarios passed")

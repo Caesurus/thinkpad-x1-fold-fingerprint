@@ -19,6 +19,9 @@ gboolean x1fold_session_command (X1FoldSession *session, const guint8 *command,
                                  gsize size, guint8 *reply, gsize capacity,
                                  gsize *received, gint64 deadline,
                                  GCancellable *cancel, GError **error);
+gboolean x1fold_session_listen (X1FoldSession *session, gboolean listen, GError **error);
+gboolean x1fold_session_wait_notification (X1FoldSession *session, gint64 deadline,
+                                           GCancellable *cancel, GError **error);
 gboolean x1fold_session_close (X1FoldSession *session, gint64 deadline,
                                GCancellable *cancel, GError **error);
 void x1fold_session_free (X1FoldSession *session);

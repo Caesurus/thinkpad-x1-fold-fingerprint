@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
-/* This binary links two test-only wrappers for a synthetic peer on a packet
- * socket. All handshake and record exchanges use the production transport. */
-#include "session.h"
+/* The test supplies a synthetic sensor trust decision, idle feature status
+ * and a packet-socket bridge for event-listener ioctls. It uses the production
+ * transport for the full handshake, encrypted commands and HID notification reads. */
+#include "capture.h"
+#include <stdarg.h>
+#include <linux/hidraw.h>
+#include <sys/ioctl.h>
 #include <openssl/core_names.h>
 #include <openssl/x509.h>
 #include <string.h>
 #include <unistd.h>
 
 static EVP_PKEY *test_peer;
-static gboolean reader_busy;
+static gboolean reader_busy, short_end;
 
 EVP_PKEY *
 __wrap_x1fold_sensor_public_key (const struct x1fold_version *version, const guint8 *cert,
@@ -24,6 +28,76 @@ __wrap_x1fold_session_status (int fd, gboolean *active, GError **error)
 {
   *active = reader_busy;
   return TRUE;
+}
+
+/* Relay only the production event HID ioctls to the independent simulator. */
+int
+__wrap_ioctl (int fd, unsigned long op, ...)
+{
+  g_assert_cmpuint (op, ==, HIDIOCSFEATURE (20));
+  va_list args;
+  va_start (args, op);
+  guint8 *report = va_arg (args, guint8 *);
+  va_end (args);
+  ssize_t n = write (fd, report, 20);
+  return short_end && n == 20 && !memcmp (report + 1, "end event", 9) ? 19 : n;
+}
+
+struct touch {
+  guint prompts;
+  GCancellable *cancel;
+  gboolean delayed;
+  GThread *thread;
+};
+
+static gpointer
+cancel_wait (gpointer data)
+{
+  g_usleep (100 * G_TIME_SPAN_MILLISECOND);
+  g_cancellable_cancel (data);
+  return NULL;
+}
+
+static void
+ready (gpointer data)
+{
+  struct touch *touch = data;
+  touch->prompts++;
+  if (touch->delayed)
+    touch->thread = g_thread_new ("cancel-finger-wait", cancel_wait, touch->cancel);
+  else if (touch->cancel)
+    g_cancellable_cancel (touch->cancel);
+}
+
+static void
+test_capture (X1FoldSession *session, const char *mode, gint64 deadline)
+{
+  g_autoptr(GCancellable) cancel = g_cancellable_new ();
+  struct touch touch = {0};
+  touch.delayed = !strcmp (mode, "capture-cancel-wait");
+  if (touch.delayed || !strcmp (mode, "capture-cancel"))
+    touch.cancel = cancel;
+  short_end = !strcmp (mode, "capture-short-end");
+  if (!strcmp (mode, "capture-timeout"))
+    deadline = g_get_monotonic_time () + 400 * G_TIME_SPAN_MILLISECOND;
+  g_autoptr(GError) error = NULL;
+  X1FoldCapturePurpose purpose = !strcmp (mode, "capture-enroll") ? X1FOLD_CAPTURE_ENROLL
+                                                                : X1FOLD_CAPTURE_VERIFY;
+  gboolean ok = x1fold_capture_frame (session, purpose, deadline, cancel, ready, &touch, &error);
+  if (touch.thread)
+    g_thread_join (touch.thread);
+  g_assert_cmpuint (touch.prompts, ==, !g_str_equal (mode, "capture-denied"));
+  if (!strcmp (mode, "capture-denied"))
+    g_assert_error (error, G_IO_ERROR, G_IO_ERROR_FAILED);
+  else if (touch.cancel)
+    g_assert_error (error, G_IO_ERROR, G_IO_ERROR_CANCELLED);
+  else if (!strcmp (mode, "capture-timeout"))
+    g_assert_error (error, G_IO_ERROR, G_IO_ERROR_TIMED_OUT);
+  else if (short_end || !strcmp (mode, "capture-invalid-page"))
+    g_assert_error (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA);
+  else
+    g_assert_no_error (error);
+  g_assert_cmpint (ok, ==, error == NULL);
 }
 
 int
@@ -84,6 +158,8 @@ main (int argc, char **argv)
     }
   g_assert_no_error (error);
   g_assert_nonnull (session);
+  if (g_str_has_prefix (mode, "capture-"))
+    test_capture (session, mode, deadline);
   const guint8 version_command = 1;
   for (int i = 0; i < 2; i++)
     {

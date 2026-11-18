@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 /* Caller holds the exclusive reader claim. systemd supplies fd 3.
  * In --paired mode fds 4, 5 and 6 supply the owner's existing pairing. */
-#include "session.h"
+#include "capture.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <openssl/pem.h>
@@ -31,8 +31,15 @@ no_password_prompt (char *buf, int size, int writing, void *user)
   return -1;
 }
 
+static void
+prompt_touch (gpointer unused)
+{
+  puts ("Touch the Fold fingerprint reader now.");
+  fflush (stdout);
+}
+
 static gboolean
-authenticated_version (int fd, const struct x1fold_version *expected, GError **error)
+inspect_pairing (int fd, const struct x1fold_version *expected, gboolean capture, GError **error)
 {
   g_autoptr(GBytes) sensor = certificate_fd (4, error);
   if (!sensor)
@@ -77,6 +84,10 @@ authenticated_version (int fd, const struct x1fold_version *expected, GError **e
                                "Authenticated firmware identity did not match discovery");
           ok = FALSE;
         }
+      if (ok && capture)
+        ok = x1fold_capture_frame (session, X1FOLD_CAPTURE_VERIFY,
+                                   g_get_monotonic_time () + 30 * G_TIME_SPAN_SECOND, NULL,
+                                   prompt_touch, NULL, error);
       if (!x1fold_session_close (session, g_get_monotonic_time () + 3 * G_TIME_SPAN_SECOND,
                                  NULL, ok ? error : NULL))
         ok = FALSE;
@@ -96,10 +107,11 @@ authenticated_version (int fd, const struct x1fold_version *expected, GError **e
 int
 main (int argc, char **argv)
 {
-  gboolean paired = argc == 2 && !strcmp (argv[1], "--paired");
+  gboolean capture = argc == 3 && !strcmp (argv[2], "--capture");
+  gboolean paired = (argc == 2 || capture) && !strcmp (argv[1], "--paired");
   if (argc != 1 && !paired)
     {
-      fputs ("Usage: native-inspect [--paired]\n", stderr);
+      fputs ("Usage: native-inspect [--paired [--capture]]\n", stderr);
       return 1;
     }
   const int fd = 3;
@@ -126,8 +138,10 @@ main (int argc, char **argv)
       return 2;
     }
   if (!x1fold_read_version (fd, &info, FALSE, NULL, &error) ||
-      (paired && !authenticated_version (fd, &info, &error)))
+      (paired && !inspect_pairing (fd, &info, capture, &error)))
     goto failure;
+  if (capture)
+    puts ("Reader reported finger down and frame ready. Capture finished and session closed.");
   printf ("%sfirmware %u.%u build %u, product 0x%02x, interface 0x%02x, "
           "provisioning %u, security flags 0x%04x\n",
           paired ? "Verified paired session, closed, " : "Reader ",

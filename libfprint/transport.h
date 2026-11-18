@@ -20,5 +20,13 @@ gboolean x1fold_is_descriptor (const guint8 *descriptor, gsize size);
 gboolean x1fold_exchange (int fd, const guint8 *command, gsize command_len,
                           guint8 *reply, gsize capacity, gsize *reply_len,
                           gint64 deadline, GCancellable *cancellable, GError **error);
+/* A notification is a wake-up hint. The caller reads the authenticated event
+ * queue for the event type. Set notified to FALSE when consuming the hint. */
+gboolean x1fold_exchange_notified (int fd, const guint8 *command, gsize command_len,
+                                   guint8 *reply, gsize capacity, gsize *reply_len,
+                                   gint64 deadline, GCancellable *cancellable,
+                                   gboolean *notified, GError **error);
+gboolean x1fold_event_listen (int fd, gboolean listen, GError **error);
+gboolean x1fold_read_notification (int fd, gint64 deadline, GCancellable *cancel, GError **error);
 gboolean x1fold_read_serial (int fd, guint8 serial[6], GCancellable *cancellable, GError **error);
 int x1fold_open_sensor (const gchar *path, dev_t expected, guint8 serial[6], GCancellable *cancellable, GError **error);
