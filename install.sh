@@ -4,6 +4,11 @@ set -eu
 cd "$(dirname "$0")"
 build_dir=${BUILD_DIR:-"$PWD/build"}
 root=${DESTDIR:-}
+case "$#:${1:-}" in
+    0:|1:--native) backend=native ;;
+    1:--legacy) backend=legacy ;;
+    *) echo "Usage: ./install.sh [--native|--legacy]" >&2; exit 2 ;;
+esac
 if [ -n "$root" ]; then
     case "$root" in /*) ;; *) echo "DESTDIR must be absolute" >&2; exit 2 ;; esac
     mkdir -p "$root"
@@ -14,8 +19,14 @@ else
     [ "$(dpkg --print-architecture)" = amd64 ] || { echo "Ubuntu amd64 required" >&2; exit 1; }
 fi
 
-for input in "$build_dir/worker" "$build_dir/libx1fold-hid.so" service/worker.py vendor-host/console_session.py \
-             service/x1fold-fingerprint.socket service/x1fold-fingerprint@.service; do
+if [ "$backend" = native ]; then
+    unit=service/native/x1fold-fingerprint@.service
+    set -- "$build_dir/native-worker"
+else
+    unit=service/x1fold-fingerprint@.service
+    set -- "$build_dir/worker" service/worker.py vendor-host/console_session.py
+fi
+for input in "$@" "$build_dir/libx1fold-hid.so" service/x1fold-fingerprint.socket "$unit"; do
     [ -s "$input" ] || { echo "Missing installation input: $input" >&2; exit 1; }
 done
 
@@ -29,7 +40,12 @@ copy_file() (
     mv -T -- "$temporary" "$dest"
 )
 
-if [ -z "$root" ]; then
+if [ -z "$root" ] && [ "$backend" = native ]; then
+    for name in sensor.cert host.cert host-key.pem; do
+        credential=/etc/credstore.encrypted/x1fold-native/$name.cred
+        [ -s "$credential" ] || { echo "Missing encrypted native pairing credential: $credential" >&2; exit 1; }
+    done
+elif [ -z "$root" ]; then
     credential=/etc/credstore.encrypted/x1fold-fingerprint.cred
     if [ ! -e "$credential" ]; then
         if [ -e /var/lib/x1fold-fingerprint-worker/.lock ]; then
@@ -50,10 +66,14 @@ fi
 
 helper=/usr/local/libexec/x1fold-fingerprint
 units=/etc/systemd/system
-copy_file 0755 "$build_dir/worker" "$helper/worker"
-copy_file 0644 service/worker.py "$helper/worker.py"
-copy_file 0644 vendor-host/console_session.py "$helper/console_session.py"
-copy_file 0644 service/x1fold-fingerprint@.service "$units/x1fold-fingerprint@.service"
+if [ "$backend" = native ]; then
+    copy_file 0755 "$build_dir/native-worker" "$helper/native-worker"
+else
+    copy_file 0755 "$build_dir/worker" "$helper/worker"
+    copy_file 0644 service/worker.py "$helper/worker.py"
+    copy_file 0644 vendor-host/console_session.py "$helper/console_session.py"
+fi
+copy_file 0644 "$unit" "$units/x1fold-fingerprint@.service"
 copy_file 0644 service/x1fold-fingerprint.socket "$units/x1fold-fingerprint.socket"
 copy_file 0644 "$build_dir/libx1fold-hid.so" /usr/lib/x86_64-linux-gnu/libfprint-2/tod-1/libx1fold-hid.so
 

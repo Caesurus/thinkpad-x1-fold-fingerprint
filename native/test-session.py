@@ -6,6 +6,8 @@ import socket
 import struct
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -64,7 +66,7 @@ def open_record(wire, key, salt, seq, kind):
     return AESGCM(key).decrypt(salt + wire[5:13], wire[13:], aad)
 
 
-def capture(sock, keys, mode, seq=1):
+def capture(sock, keys, mode, seq=1, client=None):
     notice = bytes([16]) + bytes(19)
 
     def exchange(expected, response, hint=False):
@@ -105,6 +107,9 @@ def capture(sock, keys, mode, seq=1):
         page(65535, [1])            # Finger-down alone is also insufficient.
     elif mode == "capture-cancel-wait":
         page(65535, [])
+        if client is not None:
+            assert sock.recv(1) == b"W"
+            client.shutdown(socket.SHUT_WR)
     elif mode == "capture-legacy":
         exchange(bytes.fromhex("87ffff200001000000"), bytes.fromhex("0504"))
         page(65535, [1], pending=2, legacy=True)
@@ -122,7 +127,7 @@ def capture(sock, keys, mode, seq=1):
     return seq
 
 
-def print_operation(sock, keys, mode):
+def print_operation(sock, keys, mode, client=None):
     seq = 1
     tuid = b"T" * 16
     child = b"P" * 16
@@ -247,6 +252,8 @@ def print_operation(sock, keys, mode):
         exchange(object_cmd(0xa1, 3, obj), struct.pack("<II", 0, len(data)) + data)
     if mode.startswith("verify-directory-"):
         return seq
+    if mode == "verify-client-cancel":
+        return capture(sock, keys, "capture-cancel-wait", seq, client)
     seq = capture(sock, keys, "capture-verify", seq)
     quality = 49 if mode == "verify-low-quality" else 50
     metric = 1 if mode == "verify-malformed-metric" else 0x10000
@@ -272,11 +279,20 @@ def print_operation(sock, keys, mode):
     return seq
 
 
-def reader(sock, mode):
-    identity = ec.generate_private_key(ec.SECP256R1())
-    sock.sendall(identity.public_key().public_bytes(serialization.Encoding.DER,
-                                                   serialization.PublicFormat.SubjectPublicKeyInfo))
-    host = serialization.load_der_public_key(sock.recv(128))
+def reader(sock, mode, worker_keys=None, client=None):
+    if worker_keys is not None:
+        identity, host = worker_keys
+        assert command(sock) == b"\x01"
+        version = bytearray(38)
+        version[10:12] = bytes([10, 1])
+        version[13] = 0x41
+        version[18:24] = bytes(range(1, 7))
+        respond(sock, version)
+    else:
+        identity = ec.generate_private_key(ec.SECP256R1())
+        sock.sendall(identity.public_key().public_bytes(serialization.Encoding.DER,
+                                                       serialization.PublicFormat.SubjectPublicKeyInfo))
+        host = serialization.load_der_public_key(sock.recv(128))
     if mode.startswith("open-"):
         assert sock.recv(20) == b""  # The client must close before its first HID command.
         return
@@ -318,9 +334,10 @@ def reader(sock, mode):
         return
     start = capture(sock, keys, mode) if mode.startswith("capture-") else 1
     if mode.startswith(("verify-", "delete-", "enroll-")):
-        start = print_operation(sock, keys, mode)
+        start = print_operation(sock, keys, mode, client)
     previous = None
-    for i in [0, 1]:
+    probes = 0 if worker_keys else 2
+    for i in range(probes):
         seq = start + i
         assert open_record(command(sock), keys[:32], keys[64:68], seq, 23) == b"\x01"
         body = bytes(range(i, i + 38))
@@ -333,9 +350,52 @@ def reader(sock, mode):
         previous = reply
     if mode.startswith("record-"):
         return
-    assert open_record(command(sock), keys[:32], keys[64:68], start + 2, 21) == b"\x01\x00"
-    alert = b"\x02\x28" if mode == "close-invalid" else b"\x01\x00"
-    respond(sock, send_record(21, alert, keys[32:64], keys[68:], start + 2))
+    assert open_record(command(sock), keys[:32], keys[64:68], start + probes, 21) == b"\x01\x00"
+    alert = b"\x02\x28" if mode in ("close-invalid", "verify-close-failed") else b"\x01\x00"
+    respond(sock, send_record(21, alert, keys[32:64], keys[68:], start + probes))
+
+
+def run_worker(exe, mode, expected_events):
+    sensor = ec.generate_private_key(ec.SECP256R1())
+    identity = ec.generate_private_key(ec.SECP256R1())
+    host = identity.public_key()
+    public = host.public_numbers()
+    host_cert = (bytes.fromhex("3f5f1700") + public.x.to_bytes(68, "little")
+                 + public.y.to_bytes(68, "little") + bytes.fromhex("00022000")).ljust(400, b"\0")
+    sensor_cert = b"TEST" + sensor.public_key().public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    op = {"enroll": 1, "verify": 2, "delete": 3}[mode.split("-")[0]]
+    frame = (b"X1WB" + bytes([1, op, 0, 0]) + os.urandom(16) + b"\xb1".ljust(16, b"\0")
+             + bytes([1, 2, 3, 4, 5, 6, 2, 0]))
+    with tempfile.TemporaryDirectory() as directory:
+        files = Path(directory)
+        (files / "sensor.cert").write_bytes(sensor_cert.ljust(400, b"\0"))
+        (files / "host.cert").write_bytes(host_cert)
+        (files / "host-key.pem").write_bytes(identity.private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+        if mode == "verify-missing-credential":
+            (files / "host-key.pem").unlink()
+        sensor_sock, hid = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        client, channel = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        with client, channel, sensor_sock, hid:
+            client.settimeout(4)
+            sensor_sock.settimeout(4)
+            handles = (channel.fileno(), hid.fileno())
+            with subprocess.Popen([exe, *map(str, handles), mode], pass_fds=handles,
+                                  env=dict(os.environ, CREDENTIALS_DIRECTORY=directory)) as proc:
+                channel.close()
+                hid.close()
+                try:
+                    client.sendall(frame)
+                    if mode != "verify-missing-credential":
+                        reader(sensor_sock, mode, (sensor, host), client)
+                    for event, stage in expected_events:
+                        assert client.recv(64) == frame[:6] + bytes([event, stage]) + frame[8:]
+                    assert client.recv(64) == b""
+                    assert proc.wait(timeout=4) == int(expected_events[-1][0] == 6)
+                finally:
+                    if proc.poll() is None:
+                        proc.kill()
 
 
 def run(exe, mode):
@@ -372,3 +432,11 @@ if __name__ == "__main__":
     for case in cases:
         run(sys.argv[1], case)
     print(f"{len(cases)} native session and biometric scenarios passed")
+    if len(sys.argv) == 3:
+        workers = {"verify-match": [(4, 0)], "verify-rejected": [(5, 0)],
+                   "verify-missing-credential": [(6, 0)], "verify-close-failed": [(6, 0)],
+                   "verify-client-cancel": [(7, 0)], "enroll-duplicate": [(9, 0)],
+                   "enroll-multiple": [(1, 1), (2, 0), (1, 2), (3, 0)], "delete-one": [(8, 0)]}
+        for mode, events in workers.items():
+            run_worker(sys.argv[2], mode, events)
+        print(f"{len(workers)} native worker transactions passed")

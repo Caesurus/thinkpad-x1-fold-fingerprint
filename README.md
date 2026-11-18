@@ -2,11 +2,34 @@
 
 This driver lets KDE and `fprintd` enroll and verify fingers on the USB-connected detachable keyboard for the **ThinkPad X1 Fold 16 Gen 1**. The keyboard is USB `17ef:6142`. Its Synaptics fingerprint reader uses vendor HID interface 04. Lenovo also identifies its biometric child as `06cb:00dd`.
 
-The tested system ran **Ubuntu 26.04.1 on x86-64**, Ubuntu's libfprint 1.95.1 TOD interface, and fprintd 1.94.5. On that system a right-index enrollment unlocked the KDE desktop twice. Password fallback also worked. Successive scans opened fresh workers using the same sensor pairing while the keyboard stayed connected.
+The tested system ran **Ubuntu 26.04.1 on x86-64**, Ubuntu's libfprint 1.95.1 TOD interface, and fprintd 1.94.5. With the legacy Lenovo-backed worker, a right-index enrollment unlocked the KDE desktop twice. Password fallback also worked. Successive scans opened fresh workers using the same sensor pairing while the keyboard stayed connected.
 
-Development of the independent Linux C backend is on the `native-backend` branch. `make native native-worker` builds its static library and experimental biometric worker offline. It implements enrollment, verification and individual print deletion. The worker requires a pairing credential for the reader. The native operations have passed software-reader tests and await physical validation. The installed release uses the Lenovo worker for biometric operations. [Architecture diagrams and verification status](docs/native-backend.md)
+The default build on `native-backend` produces a native Linux worker and libfprint plugin. The worker implements enrollment, verification and individual print deletion. These operations have passed software-reader tests and await physical validation. [Architecture diagrams and verification status](docs/native-backend.md)
 
-## Before building
+## Native build and staged installation
+
+On Ubuntu amd64 the build uses a C toolchain, pkg-config, Linux HID headers, OpenSSL 3, GLib/GIO, libgudev and the libfprint TOD development packages. The tests also use Python cryptography, PyGObject and umockdev. Run from the repository root with those dependencies installed.
+
+```sh
+make
+make check
+stage=$(mktemp -d)
+DESTDIR="$stage" ./install.sh
+```
+
+The stage contains the TOD plugin, the native worker, the systemd socket and its service template. The static library is linked into the worker. These commands build and stage offline. A staged installation does not contact systemd or the keyboard.
+
+The native service requires three existing credentials for this reader. Systemd loads them from `/etc/credstore.encrypted/x1fold-native/` under these names.
+
+| Encrypted file | Credential name | Contents |
+| --- | --- | --- |
+| `sensor.cert.cred` | `sensor.cert` | Reader's 400-byte signed sensor certificate |
+| `host.cert.cred` | `host.cert` | Reader's 400-byte returned host certificate |
+| `host-key.pem.cred` | `host-key.pem` | Corresponding host P-256 private key in PEM format |
+
+The encrypted files must be usable by the system service manager and bound to the credential names above. The native installer checks that all three files exist before replacing runtime files on a live system. The existing OEM installation uses a different credential format. Migration and physical native verification are still open.
+
+## Legacy Lenovo-backed build
 
 The tested reader already had a working sensor pairing and firmware 10.1 build 3654703. Installation sets up the Linux authentication service. The test keyboard had undergone an earlier one-time provisioning step using Lenovo’s driver. Compatibility with an untouched or Windows-owned reader has not been established. This installer reuses a working pairing. Firmware flashing and partition formatting are unnecessary for this build. Keep access to your password and a Windows recovery option when experimenting with a differently provisioned reader.
 
@@ -25,8 +48,6 @@ sudo apt install build-essential binutils git curl patch pkg-config innoextract 
     gir1.2-fprint-2.0 fprintd libpam-fprintd
 ```
 
-## Build
-
 Run these commands from the root of this repository. The dependencies live under the Git-ignored `.deps/` directory. The builder extracts only the two required Windows DLLs into a temporary directory and checks the pinned revision, installer hash, and individual DLL hashes before linking.
 
 ```sh
@@ -34,18 +55,18 @@ mkdir -p .deps
 git clone --no-checkout https://github.com/Popax21/synaTudor.git .deps/synaTudor
 git -C .deps/synaTudor checkout --detach 31dfdb06107fd1c35c9f9ceae72617e98eccc43a
 curl --fail --location --output .deps/n3lgf05w.exe https://download.lenovo.com/pccbbs/mobiles/n3lgf05w.exe
-make
-make check
+make legacy
+make check-legacy
 ```
 
-For an offline build, supply a clean pinned source checkout and a previously downloaded installer with `make TUDOR=/path/to/synaTudor LENOVO=/path/to/n3lgf05w.exe`. The `LENOVO` argument also accepts a directory containing the two extracted DLLs. The build produces `build/libx1fold-hid.so` and `build/worker`. The worker embeds the proprietary DLLs for local use.
+For an offline legacy build, supply a clean pinned source checkout and a previously downloaded installer with `make legacy TUDOR=/path/to/synaTudor LENOVO=/path/to/n3lgf05w.exe`. The `LENOVO` argument also accepts a directory containing the two extracted DLLs. The legacy build produces `build/libx1fold-hid.so` and `build/worker`. This worker embeds the proprietary DLLs for local use.
 
-## Install and use
+## Install and use the legacy worker
 
 Finish any active fingerprint operation before installing. The installer copies the module and worker, creates the service's encrypted machine credential on first install, enables socket activation at boot, and reloads an active fprintd service. Reinstallation reuses the machine credential. KDE uses its existing fingerprint and password PAM services.
 
 ```sh
-sudo ./install.sh
+sudo ./install.sh --legacy
 systemctl is-enabled x1fold-fingerprint.socket
 fprintd-list "$USER"
 ```
@@ -63,11 +84,11 @@ For a packaging check, stage the six runtime files under an empty directory with
 
 ```sh
 stage=$(mktemp -d)
-DESTDIR="$stage" ./install.sh
+DESTDIR="$stage" ./install.sh --legacy
 find "$stage" -type f
 ```
 
-## How the pieces fit
+## Legacy components
 
 | Component | Role |
 | --- | --- |
@@ -79,7 +100,7 @@ find "$stage" -type f
 
 The sensor stores the biometric record. The fprintd enrollment identifies it by GUID, sensor serial, and finger. A successful verification requires a fresh WinBio match. Systemd supplies the worker with private state under `/var/lib/x1fold-fingerprint-worker` and a credential from `/etc/credstore.encrypted/x1fold-fingerprint.cred`. Both belong to the installed machine.
 
-## Verification and limitations
+## Legacy hardware results
 
 Hardware testing covered enrollment, a correct-finger match, rejection of a different finger, removal of an individual print from both sensor and host, and KDE unlock with password fallback. Software recovery also reopened an abandoned sensor session while the keyboard stayed connected.
 
@@ -87,4 +108,4 @@ After a USB cable reconnect, fprintd recognized the reader and its saved enrollm
 
 ## Source provenance
 
-The build uses Popax21's pinned synaTudor Windows runtime and Lenovo's N3LGF05W driver package. The supported files are `synaFpAdapter153.dll` and `synaWudfBioHid153.dll`. The exact SHA-256 values are in the worker builder. The upstream LGPL 2.1 license is in `LICENSES/`, and individual source files retain their SPDX notices. Lenovo supplies the proprietary components under its own terms. Publish the source tree and keep the installer, DLLs, linked worker, machine credentials, and enrollments local. [synaTudor source revision](https://github.com/Popax21/synaTudor/tree/31dfdb06107fd1c35c9f9ceae72617e98eccc43a) · [Lenovo package manifest](https://download.lenovo.com/pccbbs/mobiles/n3lgf05w_2_.xml)
+The legacy build uses Popax21's pinned synaTudor Windows runtime and Lenovo's N3LGF05W driver package. The supported files are `synaFpAdapter153.dll` and `synaWudfBioHid153.dll`. The exact SHA-256 values are in the worker builder. The upstream LGPL 2.1 license is in `LICENSES/`, and individual source files retain their SPDX notices. Lenovo supplies the proprietary components under its own terms. Publish the source tree and keep the installer, DLLs, linked worker, machine credentials, and enrollments local. [synaTudor source revision](https://github.com/Popax21/synaTudor/tree/31dfdb06107fd1c35c9f9ceae72617e98eccc43a) · [Lenovo package manifest](https://download.lenovo.com/pccbbs/mobiles/n3lgf05w_2_.xml)

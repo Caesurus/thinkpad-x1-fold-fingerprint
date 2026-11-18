@@ -34,8 +34,8 @@ $(BUILD_DIR)/test-print-identity: tests/print-identity.c print-identity.c print-
 $(BUILD_DIR)/test-transport: tests/transport.c transport.c transport.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(GIO_CFLAGS) tests/transport.c transport.c $(LDFLAGS) $(GIO_LIBS) -o "$@"
 
-check: all $(BUILD_DIR)/native-worker $(BUILD_DIR)/test-session $(BUILD_DIR)/test-host-proof $(BUILD_DIR)/test-handshake $(BUILD_DIR)/test-certificate $(BUILD_DIR)/test-transport $(BUILD_DIR)/test-biometric-ipc $(BUILD_DIR)/test-print-identity
-	$(PYTHON) -B ../native/test-session.py "$(BUILD_DIR)/test-session"
+check: all $(BUILD_DIR)/native-worker $(BUILD_DIR)/test-worker $(BUILD_DIR)/test-session $(BUILD_DIR)/test-host-proof $(BUILD_DIR)/test-handshake $(BUILD_DIR)/test-certificate $(BUILD_DIR)/test-transport $(BUILD_DIR)/test-biometric-ipc $(BUILD_DIR)/test-print-identity
+	$(PYTHON) -B ../native/test-session.py "$(BUILD_DIR)/test-session" "$(BUILD_DIR)/test-worker"
 	$(BUILD_DIR)/test-host-proof
 	$(BUILD_DIR)/test-handshake
 	$(BUILD_DIR)/test-certificate
@@ -95,5 +95,11 @@ $(BUILD_DIR)/test-certificate: ../native/test-certificate.c $(BUILD_DIR)/libx1fo
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(GIO_CFLAGS) $^ $(LDFLAGS) $(GIO_LIBS) $(CRYPTO_LIBS) -o "$@"
 
 
-$(BUILD_DIR)/native-worker: ../native/worker.c biometric-ipc.c $(BUILD_DIR)/libx1fold-native.a
+$(BUILD_DIR)/transaction.o: ../native/transaction.c ../native/worker.h ../native/credentials.h ../native/enroll.h ../native/verify.h biometric-ipc.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(GIO_CFLAGS) -c $< -o "$@"
+
+$(BUILD_DIR)/native-worker: ../native/worker.c biometric-ipc.c $(BUILD_DIR)/transaction.o $(BUILD_DIR)/libx1fold-native.a
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(GIO_CFLAGS) $^ $(LDFLAGS) $(GIO_LIBS) $(CRYPTO_LIBS) -o "$@"
+
+$(BUILD_DIR)/test-worker: ../native/test-worker.c $(BUILD_DIR)/transaction.o $(BUILD_DIR)/libx1fold-native.a
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(GIO_CFLAGS) $^ $(LDFLAGS) -Wl,--wrap=x1fold_sensor_public_key,--wrap=x1fold_session_status,--wrap=x1fold_check_fd,--wrap=x1fold_read_notification,--wrap=ioctl $(GIO_LIBS) $(CRYPTO_LIBS) -o "$@"
