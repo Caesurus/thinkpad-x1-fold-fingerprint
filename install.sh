@@ -40,12 +40,7 @@ copy_file() (
     mv -T -- "$temporary" "$dest"
 )
 
-if [ -z "$root" ] && [ "$backend" = native ]; then
-    for name in sensor.cert host.cert host-key.pem; do
-        credential=/etc/credstore.encrypted/x1fold-native/$name.cred
-        [ -s "$credential" ] || { echo "Missing encrypted native pairing credential: $credential" >&2; exit 1; }
-    done
-elif [ -z "$root" ]; then
+if [ -z "$root" ] && [ "$backend" = legacy ]; then
     credential=/etc/credstore.encrypted/x1fold-fingerprint.cred
     if [ ! -e "$credential" ]; then
         if [ -e /var/lib/x1fold-fingerprint-worker/.lock ]; then
@@ -81,4 +76,7 @@ if [ -z "$root" ]; then
     systemctl daemon-reload
     systemctl enable --now x1fold-fingerprint.socket
     systemctl try-restart fprintd.service
+    if [ "$backend" = native ]; then
+        rm -f -- "$helper/worker" "$helper/worker.py" "$helper/console_session.py"
+    fi
 fi

@@ -369,12 +369,12 @@ def run_worker(exe, mode, expected_events):
              + bytes([1, 2, 3, 4, 5, 6, 2, 0]))
     with tempfile.TemporaryDirectory() as directory:
         files = Path(directory)
-        (files / "sensor.cert").write_bytes(sensor_cert.ljust(400, b"\0"))
-        (files / "host.cert").write_bytes(host_cert)
-        (files / "host-key.pem").write_bytes(identity.private_bytes(
+        (files / "x1fold-native.sensor.cert").write_bytes(sensor_cert.ljust(400, b"\0"))
+        (files / "x1fold-native.host.cert").write_bytes(host_cert)
+        (files / "x1fold-native.host-key.pem").write_bytes(identity.private_bytes(
             serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
         if mode == "verify-missing-credential":
-            (files / "host-key.pem").unlink()
+            (files / "x1fold-native.host-key.pem").unlink()
         sensor_sock, hid = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
         client, channel = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
         with client, channel, sensor_sock, hid:

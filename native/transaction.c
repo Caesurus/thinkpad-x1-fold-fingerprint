@@ -55,7 +55,7 @@ run_operation (int hid, const struct fold_bio_frame *request, struct monitor *mo
   GCancellable *cancel = monitor->cancel;
   const struct fold_bio_identity *print = &request->print;
   const char *path = g_getenv ("CREDENTIALS_DIRECTORY");
-  const char *names[] = {"sensor.cert", "host.cert", "host-key.pem"};
+  const char *names[] = {"x1fold-native.sensor.cert", "x1fold-native.host.cert", "x1fold-native.host-key.pem"};
   int dir = path ? open (path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW) : -1;
   if (dir < 0)
     {

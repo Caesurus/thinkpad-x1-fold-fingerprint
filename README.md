@@ -19,15 +19,17 @@ DESTDIR="$stage" ./install.sh
 
 The stage contains the TOD plugin, the native worker, the systemd socket and its service template. The static library is linked into the worker. These commands build and stage offline. A staged installation does not contact systemd or the keyboard.
 
-The native service requires three existing credentials for this reader. Systemd loads them from `/etc/credstore.encrypted/x1fold-native/` under these names.
+To activate the native backend on the target machine, run `sudo ./install.sh --native`. It replaces the installed libfprint module and service, reloads systemd, and retires the legacy worker and Python launchers. It leaves PAM, fingerprint enrollments and credential stores in place. A desktop with password unlock can run this backend before the pairing credentials are available. Fingerprint operations then return an error until a usable pairing is present.
 
-| Encrypted file | Credential name | Contents |
-| --- | --- | --- |
-| `sensor.cert.cred` | `sensor.cert` | Reader's 400-byte signed sensor certificate |
-| `host.cert.cred` | `host.cert` | Reader's 400-byte returned host certificate |
-| `host-key.pem.cred` | `host-key.pem` | Corresponding host P-256 private key in PEM format |
+For fingerprint operations systemd loads these three credentials from the system credential store. Use the same name for the encrypted file and its bound credential name under `/etc/credstore.encrypted/`.
 
-The encrypted files must be usable by the system service manager and bound to the credential names above. The native installer checks that all three files exist before replacing runtime files on a live system. The existing OEM installation uses a different credential format. Migration and physical native verification are still open.
+| Credential name | Contents |
+| --- | --- |
+| `x1fold-native.sensor.cert` | Reader's 400-byte signed sensor certificate |
+| `x1fold-native.host.cert` | Reader's 400-byte returned host certificate |
+| `x1fold-native.host-key.pem` | Corresponding host P-256 private key in PEM format |
+
+The native library also implements explicit registration for an owner with an issuer-approved host request. The original installation uses a different credential format. Migration and physical native verification are still open.
 
 ## Legacy Lenovo-backed build
 
