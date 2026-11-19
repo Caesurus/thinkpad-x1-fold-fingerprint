@@ -1,0 +1,27 @@
+name: Native Linux
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install build and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends \
+            build-essential pkg-config libfprint-2-tod-dev libfprint-2-dev \
+            libgudev-1.0-dev libglib2.0-dev libssl-dev umockdev \
+            gir1.2-umockdev-1.0 gir1.2-fprint-2.0 \
+            python3-cryptography python3-gi
+      - name: Build and test native driver
+        run: make check
