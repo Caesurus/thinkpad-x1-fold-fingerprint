@@ -15,13 +15,14 @@
 #include <unistd.h>
 
 static EVP_PKEY *
-open_signer (const char *uri)
+open_issuer (const char *uri, gboolean public_only)
 {
   OSSL_STORE_CTX *store = OSSL_STORE_open (uri, UI_null (), NULL, NULL, NULL);
   if (!store)
     return NULL;
   EVP_PKEY *key = NULL;
-  if (OSSL_STORE_expect (store, OSSL_STORE_INFO_PKEY) == 1)
+  int type = public_only ? OSSL_STORE_INFO_PUBKEY : OSSL_STORE_INFO_PKEY;
+  if (OSSL_STORE_expect (store, type) == 1)
     while (!OSSL_STORE_eof (store))
       {
         OSSL_STORE_INFO *info = OSSL_STORE_load (store);
@@ -31,7 +32,7 @@ open_signer (const char *uri)
               g_clear_pointer (&key, EVP_PKEY_free);
             break;
           }
-        if (OSSL_STORE_INFO_get_type (info) == OSSL_STORE_INFO_PKEY)
+        if (OSSL_STORE_INFO_get_type (info) == type)
           {
             if (key)
               {
@@ -39,7 +40,7 @@ open_signer (const char *uri)
                 g_clear_pointer (&key, EVP_PKEY_free);
                 break;
               }
-            key = OSSL_STORE_INFO_get1_PKEY (info);
+            key = public_only ? OSSL_STORE_INFO_get1_PUBKEY (info) : OSSL_STORE_INFO_get1_PKEY (info);
           }
         OSSL_STORE_INFO_free (info);
       }
@@ -129,6 +130,29 @@ encrypt_credential (const char *name, GBytes *value, gboolean user_scope, GError
   return g_steal_pointer (&output);
 }
 
+static gboolean
+read_record (const char *path, guint8 *record, gsize size)
+{
+  int fd = open (path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+  if (fd < 0)
+    return FALSE;
+  struct stat st;
+  gboolean valid = !fstat (fd, &st) && S_ISREG (st.st_mode) && st.st_size == (off_t) size;
+  gsize pos = 0;
+  while (valid && pos < size)
+    {
+      ssize_t count = read (fd, record + pos, size - pos);
+      if (count < 0 && errno == EINTR)
+        continue;
+      if (count <= 0)
+        valid = FALSE;
+      else
+        pos += count;
+    }
+  close (fd);
+  return valid;
+}
+
 static int
 service_config (const char *flags, const char *path, gboolean user_scope)
 {
@@ -143,13 +167,7 @@ service_config (const char *flags, const char *path, gboolean user_scope)
     .major = 10, .minor = 1, .product = 0x41, .security = (guint16) security
   };
   guint8 reply[802];
-  int result_fd = open (path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
-  struct stat st;
-  gboolean complete = result_fd >= 0 && !fstat (result_fd, &st) && S_ISREG (st.st_mode) &&
-                      st.st_size == sizeof reply && pread (result_fd, reply, sizeof reply, 0) == sizeof reply;
-  if (result_fd >= 0)
-    close (result_fd);
-  if (!complete)
+  if (!read_record (path, reply, sizeof reply))
     {
       fputs ("Expected a complete 802-byte registration response.\n", stderr);
       return 1;
@@ -183,7 +201,7 @@ service_config (const char *flags, const char *path, gboolean user_scope)
 }
 
 static int
-run (gboolean registration, const guint8 serial[6], const char *issuer_uri, const char *output)
+run (const guint8 *serial, const char *issuer_uri, const char *request_path, const char *output)
 {
   g_autoptr(GError) error = NULL;
   EVP_PKEY *host = x1fold_load_host_key_fd (4, &error);
@@ -192,21 +210,33 @@ run (gboolean registration, const guint8 serial[6], const char *issuer_uri, cons
       fprintf (stderr, "%s\n", error->message);
       return 1;
     }
-  EVP_PKEY *issuer = open_signer (issuer_uri);
+  EVP_PKEY *issuer = open_issuer (issuer_uri, request_path != NULL);
   if (!issuer)
     {
-      fputs ("Cannot open a single local issuer signing key.\n", stderr);
+      fputs ("Cannot open the requested issuer key.\n", stderr);
       EVP_PKEY_free (host);
       return 1;
     }
-  g_autoptr(GBytes) request = x1fold_create_host_request (host, issuer, &error);
+  g_autoptr(GBytes) request = NULL;
   g_autoptr(GBytes) returned = NULL, sensor = NULL;
   int rc = 1, dir = -1, out = -1;
   g_autofree char *parent = g_path_get_dirname (output);
   g_autofree char *name = g_path_get_basename (output);
+  if (request_path)
+    {
+      guint8 record[400];
+      if (!read_record (request_path, record, sizeof record))
+        {
+          fputs ("Expected a 400-byte signed host request.\n", stderr);
+          goto done;
+        }
+      request = g_bytes_new (record, sizeof record);
+    }
+  else
+    request = x1fold_create_host_request (host, issuer, &error);
   if (!request)
     goto done;
-  if (registration)
+  if (serial)
     {
       int flags = fcntl (3, F_GETFL);
       if (flags < 0 || fcntl (3, F_SETFL, flags | O_NONBLOCK) < 0)
@@ -221,7 +251,7 @@ run (gboolean registration, const guint8 serial[6], const char *issuer_uri, cons
       perror ("create new output");
       goto done;
     }
-  if (!registration)
+  if (!serial)
     {
       if (store_at (out, g_bytes_get_data (request, NULL), g_bytes_get_size (request), 0) &&
           fsync (out) == 0 && fsync (dir) == 0)
@@ -275,11 +305,14 @@ main (int argc, char **argv)
   if ((argc == 4 || (argc == 5 && !strcmp (argv[4], "--user"))) && !strcmp (argv[1], "service-config"))
     return service_config (argv[2], argv[3], argc == 5);
   if (argc == 4 && !strcmp (argv[1], "request"))
-    return run (FALSE, serial, argv[2], argv[3]);
+    return run (NULL, argv[2], NULL, argv[3]);
   if (argc == 5 && !strcmp (argv[1], "register") && parse_serial (argv[2], serial) && geteuid () != 0)
-    return run (TRUE, serial, argv[3], argv[4]);
+    return run (serial, argv[3], NULL, argv[4]);
+  if (argc == 6 && !strcmp (argv[1], "register-signed") && parse_serial (argv[2], serial) && geteuid () != 0)
+    return run (serial, argv[3], argv[4], argv[5]);
   fputs ("Usage: native-register request ISSUER-URI NEW-REQUEST\n"
          "       native-register register READER-SERIAL ISSUER-URI NEW-RESPONSE\n"
+         "       native-register register-signed READER-SERIAL ISSUER-PUBLIC-URI SIGNED-REQUEST NEW-RESPONSE\n"
          "       native-register service-config SECURITY-HEX SAVED-RESPONSE [--user]\n"
          "Supply the host signing key on fd 4. Registration requires an unprivileged process and reader fd 3.\n",
          stderr);

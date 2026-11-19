@@ -42,11 +42,16 @@ validate_request (GBytes *request, EVP_PKEY *host, EVP_PKEY *issuer, GError **er
 {
   gsize len;
   const guint8 *r = g_bytes_get_data (request, &len);
-  if (!x1fold_host_public_matches (r, len, host) || r[141] || !issuer || !EVP_PKEY_is_a (issuer, "EC"))
+  if (!x1fold_host_public_matches (r, len, host) || r[140] || r[141] ||
+      !issuer || EVP_PKEY_parameters_eq (host, issuer) != 1)
     goto invalid;
   guint signature_len = r[142] | ((guint) r[143] << 8);
+  static const guint8 zeros[256] = {0};
+  if (signature_len < 8 || signature_len > 72 ||
+      memcmp (r + 144 + signature_len, zeros, sizeof zeros - signature_len))
+    goto invalid;
   EVP_MD_CTX *verify = EVP_MD_CTX_new ();
-  gboolean signed_request = signature_len >= 8 && signature_len <= 72 && verify &&
+  gboolean signed_request = verify &&
     EVP_DigestVerifyInit (verify, NULL, EVP_sha256 (), NULL, issuer) == 1 &&
     EVP_DigestVerify (verify, r + 144, signature_len, r, 142) == 1;
   EVP_MD_CTX_free (verify);

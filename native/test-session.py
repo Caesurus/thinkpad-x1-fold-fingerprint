@@ -475,6 +475,39 @@ def check_registration(register, inspect):
         issuer_file = files / "issuer.pem"
         issuer_file.write_bytes(issuer.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
                                                     serialization.NoEncryption()))
+        public_file = files / "issuer-public.pem"
+        public_file.write_bytes(issuer.public_key().public_bytes(
+            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo))
+        body = issued[:141] + bytes(1)
+        signature = issuer.sign(bytes(body), ec.ECDSA(hashes.SHA256()))
+        request = body + struct.pack("<H", len(signature)) + signature.ljust(256, b"\0")
+        request_file = files / "signed-request"
+        request_file.write_bytes(request)
+
+        def reject_before_io(candidate, public_uri, label):
+            bad = files / ("request-" + label)
+            bad.write_bytes(candidate)
+            output = files / ("result-" + label)
+            args = ["sh", "-ec", 'exec 3<&0 4<"$1"; shift; exec "$@"',
+                    "register-peer", files / "x1fold-native.host-key.pem", register, "register-signed",
+                    "010203040506", public_uri, bad, output]
+            sensor, hid = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+            with sensor, hid:
+                result = subprocess.run(args, stdin=hid, capture_output=True, timeout=4)
+                hid.close()
+                assert result.returncode == 1 and sensor.recv(128) == b"", label
+                if len(candidate) == 400:
+                    assert b"Registration not sent" in result.stderr, result.stderr
+                else:
+                    assert b"400-byte signed host request" in result.stderr and not output.exists()
+
+        reject_before_io(request[:-1], public_file.as_uri(), "short")
+        reject_before_io(request + bytes(1), public_file.as_uri(), "long")
+        reject_before_io(request[:-1] + b"\x01", public_file.as_uri(), "padding")
+        wrong = files / "wrong-public.pem"
+        wrong.write_bytes(ec.generate_private_key(ec.SECP256R1()).public_key().public_bytes(
+            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo))
+        reject_before_io(request, wrong.as_uri(), "wrong-issuer")
         for name, response, message in (
             ("refused", bytes.fromhex("0304"), b"Reader refused registration"),
             ("fold-refused", bytes.fromhex("4f04"), b"Reader refused registration\nReader declined host registration (0x044f)"),
@@ -482,8 +515,13 @@ def check_registration(register, inspect):
             ("accepted", accepted, b"Reader accepted registration"),
         ):
             output = files / name
-            args = ["sh", "-ec", 'exec 3<&0 4<"$1"; exec "$2" register 010203040506 "$3" "$4"',
-                    "register-peer", files / "x1fold-native.host-key.pem", register, issuer_file.as_uri(), output]
+            saved_request = name in ("fold-refused", "accepted")
+            args = ["sh", "-ec", 'exec 3<&0 4<"$1"; shift; exec "$@"',
+                    "register-peer", files / "x1fold-native.host-key.pem", register]
+            if saved_request:
+                args.extend(["register-signed", "010203040506", public_file.as_uri(), request_file, output])
+            else:
+                args.extend(["register", "010203040506", issuer_file.as_uri(), output])
             sensor, hid = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
             with sensor, hid, subprocess.Popen(args, stdin=hid, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
                 hid.close()
@@ -494,6 +532,8 @@ def check_registration(register, inspect):
                     registration_storage(sensor, present=name == "fold-refused")
                     frame = command(sensor)
                     assert len(frame) == 401 and frame[0] == 0x93
+                    if saved_request:
+                        assert frame[1:] == request
                     body = frame[1:143]
                     assert body[:141] == issued[:141] and body[141] == 0
                     length, = struct.unpack_from("<H", frame, 143)
