@@ -11,6 +11,7 @@ import tempfile
 
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
+from test_data import FOLD_ISSUER_PUBLIC
 
 
 def save_key(path, key):
@@ -24,6 +25,12 @@ def run_request(program, host_file, issuer_file, dest):
     return subprocess.run(
         ["sh", "-c", 'exec 4<"$1"; exec "$2" request "$3" "$4"',
          "test-register", host_file, program, issuer_file.as_uri(), dest], capture_output=True)
+
+
+def run_fold_request(program, host_file, dest):
+    return subprocess.run(
+        ["sh", "-c", 'exec 4<"$1"; exec "$2" request fold-v153: "$3"',
+         "test-register", host_file, program, dest], capture_output=True)
 
 
 def check_service_config(program, folder, host_file, body, sensor_file):
@@ -105,6 +112,22 @@ def main(program, sensor_file=None):
         issuer.public_key().verify(request[144:144 + size], body, ec.ECDSA(hashes.SHA256()))
         assert request[144 + size:] == bytes(256 - size)
         assert run_request(program, host_file, issuer_file, output).returncode != 0 and output.read_bytes() == request
+
+        # A Fold request must verify under the independently calculated OEM
+        # public point. The private signing material is never a test fixture.
+        fold_public = ec.EllipticCurvePublicKey.from_encoded_point(
+            ec.SECP256R1(), FOLD_ISSUER_PUBLIC)
+        fold_output = folder / "fold-request"
+        folded = run_fold_request(program, host_file, fold_output)
+        assert folded.returncode == 0, folded.stderr
+        fold_request = fold_output.read_bytes()
+        assert len(fold_request) == 400 and fold_request[:142] == body
+        fold_size = int.from_bytes(fold_request[142:144], "little")
+        fold_public.verify(fold_request[144:144 + fold_size], body, ec.ECDSA(hashes.SHA256()))
+        assert fold_request[144 + fold_size:] == bytes(256 - fold_size)
+        assert stat.S_IMODE(fold_output.stat().st_mode) == 0o600
+        assert run_fold_request(program, host_file, fold_output).returncode != 0
+        assert fold_output.read_bytes() == fold_request
 
         public_file = folder / "issuer-public"
         public_file.write_bytes(issuer.public_key().public_bytes(

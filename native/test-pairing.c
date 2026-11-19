@@ -8,7 +8,7 @@
 
 enum response { ALLOW, REFUSE, SHORT, WRONG_KEY };
 static enum response behavior;
-static guint reads, writes;
+static guint reads, writes, formats, fail_format, short_format;
 static gboolean busy, storage_error;
 static guint storage_checks;
 static guint8 provisioning = 3;
@@ -64,6 +64,15 @@ __wrap_x1fold_exchange (int fd, const guint8 *cmd, gsize len, guint8 *reply, gsi
       reads++;
       return TRUE;
     }
+  if (len == 2 && cmd[0] == 0x3f)
+    {
+      g_assert_cmpuint (cmd[1], ==, formats + 1);
+      g_assert_cmpuint (capacity, >=, 2);
+      formats++;
+      reply[0] = fail_format == formats ? 0x4f : 0;
+      *size = short_format == formats ? 1 : 2;
+      return TRUE;
+    }
   writes++;
   g_assert_cmpuint (cmd[0], ==, 0x93);
   g_assert_cmpmem (cmd + 1, len - 1, record, sizeof record);
@@ -112,6 +121,23 @@ attempt (EVP_PKEY *host, EVP_PKEY *issuer, const guint8 target[6], guint reads_e
     }
 }
 
+static void
+format_attempt (const guint8 target[6], guint expected_reads, guint expected_formats, gboolean success)
+{
+  g_autoptr(GError) error = NULL;
+  reads = writes = formats = 0;
+  gboolean result = x1fold_format_pairing_storage (0, target,
+      g_get_monotonic_time () + G_TIME_SPAN_SECOND, NULL, &error);
+  g_assert_cmpint (result, ==, success);
+  g_assert_cmpuint (reads, ==, expected_reads);
+  g_assert_cmpuint (formats, ==, expected_formats);
+  g_assert_cmpuint (writes, ==, 0);
+  if (success)
+    g_assert_no_error (error);
+  else
+    g_assert_nonnull (error);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -124,6 +150,23 @@ main (int argc, char **argv)
   g_assert_cmpuint (g_bytes_get_size (generated), ==, sizeof record);
   memcpy (record, g_bytes_get_data (generated, NULL), sizeof record);
   guint8 other[6] = {2};
+  format_attempt (serial, 1, 2, TRUE);
+  format_attempt (NULL, 0, 0, FALSE);
+  busy = TRUE;
+  format_attempt (serial, 0, 0, FALSE);
+  busy = FALSE;
+  format_attempt (other, 1, 0, FALSE);
+  provisioning = 1;
+  format_attempt (serial, 1, 0, FALSE);
+  provisioning = 3;
+  fail_format = 1;
+  format_attempt (serial, 1, 1, FALSE);
+  fail_format = 2;
+  format_attempt (serial, 1, 2, FALSE);
+  fail_format = 0;
+  short_format = 1;
+  format_attempt (serial, 1, 1, FALSE);
+  short_format = 0;
   attempt (issuer, issuer, serial, 0, 0, X1FOLD_PAIR_NOT_SENT);
   attempt (host, host, serial, 0, 0, X1FOLD_PAIR_NOT_SENT);
   guint8 *der = NULL;

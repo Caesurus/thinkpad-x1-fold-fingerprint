@@ -97,6 +97,76 @@ x1fold_check_pair_response (const struct x1fold_version *version, EVP_PKEY *host
   return TRUE;
 }
 
+static gboolean
+check_pair_target (int fd, const guint8 serial[6], struct x1fold_version *version,
+                   gint64 deadline, GCancellable *cancel, GError **error)
+{
+  struct stat st;
+  if (fstat (fd, &st) < 0)
+    {
+      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT, "Missing reader descriptor");
+      return FALSE;
+    }
+  gboolean active;
+  if (!x1fold_check_fd (fd, st.st_rdev, error) || !x1fold_session_status (fd, &active, error))
+    return FALSE;
+  if (active)
+    {
+      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_BUSY, "Reader already has an active session");
+      return FALSE;
+    }
+  if (g_cancellable_set_error_if_cancelled (cancel, error))
+    return FALSE;
+  const guint8 get_version = 1;
+  guint8 raw_version[38];
+  gsize size;
+  if (!x1fold_exchange (fd, &get_version, 1, raw_version, sizeof raw_version, &size, deadline, cancel, error))
+    return FALSE;
+  if (!x1fold_parse_version (raw_version, size, version) || memcmp (serial, version->serial, 6) ||
+      version->product != 0x41 || version->major != 10 || version->minor != 1 ||
+      version->provisioning != 3 || !(version->security & X1FOLD_SECURITY_ADVANCED_PAIRING))
+    {
+      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED, "Unexpected pairing target or profile");
+      return FALSE;
+    }
+  return TRUE;
+}
+
+gboolean
+x1fold_format_pairing_storage (int fd, const guint8 serial[6], gint64 deadline,
+                               GCancellable *cancel, GError **error)
+{
+  struct x1fold_version version;
+  if (!serial)
+    {
+      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT, "Missing pairing target");
+      return FALSE;
+    }
+  if (!check_pair_target (fd, serial, &version, deadline, cancel, error))
+    return FALSE;
+  for (guint8 partition = 1; partition <= 2; partition++)
+    {
+      const guint8 cmd[2] = {0x3f, partition};
+      guint8 reply[2];
+      gsize size;
+      if (g_cancellable_set_error_if_cancelled (cancel, error))
+        return FALSE;
+      if (!x1fold_exchange (fd, cmd, sizeof cmd, reply, sizeof reply, &size, deadline, cancel, error))
+        {
+          g_prefix_error (error, "Formatting partition %u: ", partition);
+          return FALSE;
+        }
+      if (size != 2 || reply[0] || reply[1])
+        {
+          g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                       "Formatting partition %u failed (status 0x%04x, reply length %zu)",
+                       partition, size == 2 ? reply[0] | (reply[1] << 8) : 0xffff, size);
+          return FALSE;
+        }
+    }
+  return TRUE;
+}
+
 X1FoldPairOutcome
 x1fold_register_host (int fd, const guint8 serial[6], GBytes *request, EVP_PKEY *host,
                       EVP_PKEY *issuer, GBytes **host_cert, GBytes **sensor_cert,
@@ -111,35 +181,10 @@ x1fold_register_host (int fd, const guint8 serial[6], GBytes *request, EVP_PKEY 
     }
   if (!validate_request (request, host, issuer, error))
     return X1FOLD_PAIR_NOT_SENT;
-  struct stat st;
-  if (fstat (fd, &st) < 0)
-    {
-      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT, "Missing reader descriptor");
-      return X1FOLD_PAIR_NOT_SENT;
-    }
-  gboolean active;
-  if (!x1fold_check_fd (fd, st.st_rdev, error) || !x1fold_session_status (fd, &active, error))
-    return X1FOLD_PAIR_NOT_SENT;
-  if (active)
-    {
-      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_BUSY, "Reader already has an active session");
-      return X1FOLD_PAIR_NOT_SENT;
-    }
-  if (g_cancellable_set_error_if_cancelled (cancel, error))
-    return X1FOLD_PAIR_NOT_SENT;
-  const guint8 get_version = 1;
-  guint8 raw_version[38];
   struct x1fold_version version;
-  gsize size;
-  if (!x1fold_exchange (fd, &get_version, 1, raw_version, sizeof raw_version, &size, deadline, cancel, error))
+  if (!check_pair_target (fd, serial, &version, deadline, cancel, error))
     return X1FOLD_PAIR_NOT_SENT;
-  if (!x1fold_parse_version (raw_version, size, &version) || memcmp (serial, version.serial, 6) ||
-      version.product != 0x41 || version.major != 10 || version.minor != 1 ||
-      version.provisioning != 3 || !(version.security & X1FOLD_SECURITY_ADVANCED_PAIRING))
-    {
-      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED, "Unexpected pairing target or profile");
-      return X1FOLD_PAIR_NOT_SENT;
-    }
+  gsize size;
   gboolean has_pairing;
   if (!x1fold_check_host_storage_until (fd, &has_pairing, deadline, cancel, error))
     {

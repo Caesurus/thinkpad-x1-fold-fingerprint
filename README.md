@@ -6,7 +6,7 @@ The tested system ran **Ubuntu 26.04.1 on x86-64**, Ubuntu's libfprint 1.95.1 TO
 
 The default build on `main` produces a native Linux worker and libfprint plugin. On the physical Fold, this worker enrolled the right index, matched it, rejected a right-middle touch, recovered from cancellation without a keyboard reset, enrolled and deleted a temporary right-middle print, and matched the right index afterward. Right-index verification passed after suspend and reboot, and KDE unlocked with the right index after reboot. [Architecture diagrams and verification status](docs/native-backend.md)
 
-**First-time pairing limit:** The tested Fold is already paired to this Linux installation. A fresh reader also needs an issuer profile that its firmware accepts. The private Fold profile is not distributed here, so this repository alone cannot yet provision another owner's unpaired reader. The driver does not use Windows DLLs at setup or runtime. Read the [install and recovery guide](docs/install-and-recovery.md) before replacing a system driver.
+**First-time pairing:** Native code now contains the fixed issuer derivation context found in Lenovo's Fold v153 DLL. The setup procedure generates a separate host key for each installation. On explicit request, native code formats SSFS and HOST, signs PAIR, and saves the returned certificates. This is the same issuer across installations, not a new per-reader issuer. The reset and registration sequence passes software-reader tests; provisioning a second physical Fold has not yet been tested. Setup and runtime do not load Windows DLLs. [First-time pairing steps](docs/install-and-recovery.md#first-time-pairing)
 
 ## Native build and staged installation
 
@@ -35,7 +35,7 @@ For fingerprint operations systemd supplies these three named credentials. They 
 
 For a completed native registration, `native-register service-config` converts the saved response and matching owner key into a single encrypted systemd drop-in for these three credentials. [Installing a completed native pairing](docs/native-backend.md#installing-a-completed-native-pairing)
 
-The optional `make native-register` tool constructs and signs the host request locally through OpenSSL. It can also send a registration to an explicitly selected reader. On November 19, 2026, this Fold accepted a native request signed through the locally reconstructed Fold issuer path. The saved certificates and host key opened authenticated native sessions before and after a physical USB reconnect. The issuer profile is kept outside this repository, so this result does not yet provide a distributable setup procedure for other readers. The installed native service uses encrypted credentials, and right-index enrollment and KDE unlock have now passed on this Fold. [Pairing implementation and evidence](docs/native-backend.md#pairing-credentials-and-the-hardware-test)
+The optional `make native-register` tool constructs and signs the host request locally through OpenSSL. It can also send registration to an explicitly selected reader using `fold-v153:`. On November 19, 2026, this Fold accepted a native request signed through that issuer path. The saved certificates and host key opened authenticated native sessions before and after a physical USB reconnect. The installed native service uses encrypted credentials, and right-index enrollment and KDE unlock have passed on this Fold. [Pairing implementation and evidence](docs/native-backend.md#pairing-credentials-and-the-hardware-test)
 
 ## Components
 
@@ -48,4 +48,4 @@ The optional `make native-register` tool constructs and signs the host request l
 
 The normal build and installed runtime use Linux ELF files and this repository's C sources. They do not load Windows DLLs or fetch synaTudor. The optional `make check-dll` target uses locally supplied DLLs as offline test inputs; they are not included in the repository or installed runtime. The LGPL 2.1 license is in `LICENSES/`, and source files retain their SPDX notices.
 
-The local issuer profile used to pair this Fold is not distributed, so this repository does not yet provide a complete first-time provisioning procedure for other readers. Firmware update and recovery are separate maintenance work. [Hardware results and protocol analysis](docs/native-backend.md)
+The fixed issuer context is included in native source. A freshly generated host key remains private to its owner; the source context is not a per-unit secret. Firmware update and recovery are separate maintenance work. [Hardware results and protocol analysis](docs/native-backend.md)

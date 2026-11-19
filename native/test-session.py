@@ -12,6 +12,7 @@ from pathlib import Path
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from test_data import FOLD_ISSUER_PUBLIC
 
 
 def command(sock):
@@ -556,6 +557,61 @@ def check_registration(register, inspect):
                 inspect_pairing(inspect, "inspect-valid", files, keys, issued_host=issued)
             else:
                 assert saved == bytes.fromhex("ffff") + bytes(800)
+
+        # First-time setup uses the built-in issuer, formats both partitions,
+        # and sends PAIR only after both format acknowledgements succeed.
+        fold_public = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), FOLD_ISSUER_PUBLIC)
+        output = files / "fold-first-pair"
+        args = ["sh", "-ec", 'exec 3<&0 4<"$1"; shift; exec "$@"',
+                "register-peer", files / "x1fold-native.host-key.pem", register,
+                "reset-register", "010203040506", "fold-v153:", output, "--erase-enrollments"]
+        sensor, hid = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        with sensor, hid, subprocess.Popen(args, stdin=hid, stdout=subprocess.PIPE,
+                                           stderr=subprocess.PIPE) as proc:
+            hid.close()
+            sensor.settimeout(4)
+            try:
+                assert command(sensor) == b"\x01"
+                respond(sensor, firmware_reply())
+                for partition in (1, 2):
+                    assert command(sensor) == bytes([0x3f, partition])
+                    respond(sensor, bytes(2))
+                assert command(sensor) == b"\x01"
+                respond(sensor, firmware_reply())
+                registration_storage(sensor, present=False)
+                frame = command(sensor)
+                assert len(frame) == 401 and frame[0] == 0x93
+                body = frame[1:143]
+                assert body[:141] == issued[:141] and body[141] == 0
+                length, = struct.unpack_from("<H", frame, 143)
+                fold_public.verify(frame[145:145 + length], body, ec.ECDSA(hashes.SHA256()))
+                respond(sensor, accepted)
+                out, err = proc.communicate(timeout=4)
+                assert proc.returncode == 0 and b"Reader accepted registration" in out, err
+                assert output.read_bytes() == accepted
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+
+        refused_output = files / "fold-format-refused"
+        refused_args = args[:-2] + [refused_output, "--erase-enrollments"]
+        sensor, hid = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        with sensor, hid, subprocess.Popen(refused_args, stdin=hid, stdout=subprocess.PIPE,
+                                           stderr=subprocess.PIPE) as proc:
+            hid.close()
+            sensor.settimeout(4)
+            try:
+                assert command(sensor) == b"\x01"
+                respond(sensor, firmware_reply())
+                assert command(sensor) == bytes.fromhex("3f01")
+                respond(sensor, bytes.fromhex("4f04"))
+                out, err = proc.communicate(timeout=4)
+                assert proc.returncode == 1 and b"Formatting partition 1 failed" in err, (out, err)
+                assert sensor.recv(1) == b"", "PAIR sent after rejected SSFS format"
+                assert refused_output.read_bytes() == bytes.fromhex("ffff") + bytes(800)
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
 
 
 def run_worker(exe, mode, expected_events, *, quality=None, match_reply=None):
