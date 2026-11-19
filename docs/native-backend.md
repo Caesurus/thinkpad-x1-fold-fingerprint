@@ -111,6 +111,24 @@ The November 18 19:03:40 UTC worker log records a successful partition-directory
 
 The 18:55:06 UTC run separately recorded an accepted PAIR followed by a failure wrapping the pairing data. This confirms that failure occurs after reader acceptance. The trace places signature generation before PAIR and storage of the resulting pairing after success. It identifies no mandatory intervening HOST write. Ownership state and issuing identity both differed across the two hardware runs. The status conversion cannot establish which firmware check failed.
 
+### Native reset and pairing on November 19
+
+The owner authorized the native SSFS and HOST reset followed by registration. A native test executable linked the production registration code and transport with a wrapper that sends the two format commands immediately before PAIR. The wrapper stops after any failed format acknowledgement and permits one reset sequence per process. Its sequence and byte-for-byte submission of a saved request passed the existing software-reader registration tests.
+
+The previous attempt retained its host and issuer keys but no request file. This test signed and saved a new 400-byte request using those same keys, independently verified the signature, then submitted that exact saved record. The original successful Fold DLL run and this physical native run returned the following results.
+
+| Exchange | Fold DLL on November 18 | Native after reset on November 19 |
+| --- | --- | --- |
+| Storage directory | 52 bytes, status 0x0000 | 52 bytes, status 0x0000 |
+| HOST read before reset | 4,104 bytes, status 0x0000 | 4,104 bytes, status 0x0000 |
+| SSFS format, command 3f 01 | 2 bytes, status 0x0000 | 2 bytes, status 0x0000 |
+| HOST format, command 3f 02 | 2 bytes, status 0x0000 | 2 bytes, status 0x0000 |
+| PAIR, 401-byte request | 802 bytes, status 0x0000 | 2 bytes, status 0x044f |
+
+Skipping the SSFS/HOST reset cannot by itself explain the earlier refusal. The native request still used a local issuer whose acceptance by this firmware is unproven. The successful DLL log omitted certificate bytes, and its logging could omit other command categories. Thus the result narrows the investigation to request signing and other startup differences without proving which firmware check produced 0x044f.
+
+The registration tool's final “HOST pairing record present” diagnostic reports its pre-reset observation. The wrapper ran the formats after that observation. The physical trace is retained locally at /tmp/fold-native-reset-test/physical.log, alongside the test source and saved request. Private keys and the state directory are excluded from the repository.
+
 ### Evidence for a persistent pairing issuer
 
 The SP141455 USB recording and two Windows debug logs after separate fingerprint-data resets contain three distinct signed host requests with three different host public keys. For each outbound 401-byte PAIR message, the 142-byte certificate body and DER signature determine candidate ECDSA verification keys. Exactly one public key verifies all three requests. Its SHA-256 fingerprint over DER SubjectPublicKeyInfo is `a11d6ebce4a13c3bbf03653be9ea1ed1de24291309f2ba7c4c580b8a89e3e0f6`. OpenSSL independently verified each signature with that public key and rejected a one-byte change to each signed body. Thus the issuer persisted across those host-key changes on the related platform. The tested contiguous public-point encodings and SPKI were absent from the two Fold DLLs. The Fold issuer remains unidentified. [First reset, outbound request](https://github.com/vojtapl/synaTudorMiS/blob/5b3aecb3432b67083beeabdc1cfb0718513a83dd/reverse%20engineering/SP141455/WinDbg%20logs/logs%20after%20BIOS%20reset%20of%20fingerprint%20data/1/log%20detailed%20from%20bios%20fingerprint%20data%20reset#L13426) · [Second reset, outbound request](https://github.com/vojtapl/synaTudorMiS/blob/5b3aecb3432b67083beeabdc1cfb0718513a83dd/reverse%20engineering/SP141455/WinDbg%20logs/logs%20after%20BIOS%20reset%20of%20fingerprint%20data/2/log%20from%20start%20with%20extra%20symbols#L13324) · [USB recording](https://github.com/vojtapl/synaTudorMiS/tree/5b3aecb3432b67083beeabdc1cfb0718513a83dd/reverse%20engineering/SP141455/Wireshark%20usb%20log)
