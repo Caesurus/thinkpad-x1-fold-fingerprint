@@ -9,6 +9,7 @@ driver:
 
 check:
 	$(MAKE) -C libfprint BUILD_DIR="$(abspath $(BUILD_DIR))" check
+	sh tests/install-state.sh
 	BUILD_DIR="$(abspath $(BUILD_DIR))" sh tests/stage-install.sh
 
 .PHONY: native native-inspect native-worker native-register
