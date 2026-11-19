@@ -205,6 +205,15 @@ check_frame_quality (X1FoldSession *s, gint64 deadline, GCancellable *cancel,
 }
 
 gboolean
+x1fold_match_is_no_match (const guint8 *reply, gsize size)
+{
+  if (size != 2)
+    return FALSE;
+  guint16 status = read_le16 (reply);
+  return status == 0x509 || status == 0x683;
+}
+
+gboolean
 x1fold_parse_match_result (const guint8 *reply, gsize size,
                            struct x1fold_match_result *result, GError **error)
 {
@@ -233,7 +242,7 @@ match_frame (X1FoldSession *s, const struct fold_bio_identity *print, const guin
   if (!x1fold_session_command (s, cmd, sizeof cmd, reply, sizeof reply, &size,
                                deadline, cancel, error))
     return FALSE;
-  if (size == 2 && (read_le16 (reply) == 0x509 || read_le16 (reply) == 0x683))
+  if (x1fold_match_is_no_match (reply, size))
     return TRUE;
   if (!ok_status (MATCH, reply, size, error))
     return FALSE;

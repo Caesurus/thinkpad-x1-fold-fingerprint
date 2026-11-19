@@ -9,6 +9,9 @@ struct x1fold_match_result {
   guint32 score;
 };
 
+/* Both statuses mean the captured frame matched no requested template. */
+gboolean x1fold_match_is_no_match (const guint8 *reply, gsize size);
+
 /* The returned views borrow storage from the successful match reply. */
 gboolean x1fold_parse_match_result (const guint8 *reply, gsize size,
                                     struct x1fold_match_result *result, GError **error);

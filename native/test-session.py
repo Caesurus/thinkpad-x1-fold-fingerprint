@@ -290,8 +290,8 @@ def print_operation(sock, keys, mode, client=None, quality=None, match_reply=Non
     extra = b"aux" if mode in ("verify-match-extra", "verify-other-account") else b""
     extra_len = 0xffffffff if mode == "verify-malformed-extra-length" else None
     result = match_result(header, data, score, extra, extra_len=extra_len)
-    if mode == "verify-rejected":
-        result = struct.pack("<H", 0x509)
+    if mode in ("verify-rejected", "verify-rejected-no-candidate"):
+        result = struct.pack("<H", 0x683 if mode == "verify-rejected-no-candidate" else 0x509)
     exchange(match_cmd, result)
     return seq
 
@@ -613,7 +613,7 @@ if __name__ == "__main__":
                  "capture-cancel-wait", "capture-denied", "capture-short-end", "verify-match",
                  "verify-directory-serial", "verify-directory-missing", "verify-directory-ambiguous",
                  "verify-other-finger", "verify-other-account", "verify-other-subject-type",
-                 "verify-other-template", "verify-zero-score", "verify-rejected", "verify-malformed-id",
+                 "verify-other-template", "verify-zero-score", "verify-rejected", "verify-rejected-no-candidate", "verify-malformed-id",
                  "verify-malformed-dupe", "verify-malformed-truncated", "verify-low-quality",
                  "verify-malformed-metric", "verify-match-extra", "verify-malformed-extra-length", "delete-one", "delete-absent", "delete-shared",
                  "delete-ambiguous", "delete-duplicate-id", "delete-wrong-serial", "delete-zero-count",
@@ -628,6 +628,7 @@ if __name__ == "__main__":
     print(f"{len(cases)} native session and biometric scenarios passed")
     if len(sys.argv) >= 3:
         workers = {"verify-match": [(4, 0)], "verify-match-extra": [(4, 0)], "verify-rejected": [(5, 0)],
+                   "verify-rejected-no-candidate": [(5, 0)],
                    "verify-low-quality": [(2, 0)], "verify-low-quality-close-failed": [(6, 0)],
                    "verify-other-finger": [(5, 0)], "verify-malformed-metric": [(6, 0)],
                    "verify-missing-credential": [(6, 0)], "verify-close-failed": [(6, 0)],

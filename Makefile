@@ -1,24 +1,15 @@
 BUILD_DIR ?= $(CURDIR)/build
-TUDOR ?= $(CURDIR)/.deps/synaTudor
-LENOVO ?= $(CURDIR)/.deps/n3lgf05w.exe
 PYTHON ?= /usr/bin/python3
 
-.PHONY: all driver worker legacy check check-legacy
+.PHONY: all driver check
 all: driver native-worker
-
-legacy: driver worker
 
 driver:
 	$(MAKE) -C libfprint BUILD_DIR="$(abspath $(BUILD_DIR))" "$(abspath $(BUILD_DIR))/libx1fold-hid.so"
 
-worker:
-	$(PYTHON) -I -B vendor-host/build_worker.py "$(TUDOR)" "$(LENOVO)" --output "$(BUILD_DIR)/worker"
-
 check:
 	$(MAKE) -C libfprint BUILD_DIR="$(abspath $(BUILD_DIR))" check
-
-check-legacy: check
-	$(PYTHON) -B -m unittest discover -s vendor-host -p test_console_session.py
+	BUILD_DIR="$(abspath $(BUILD_DIR))" sh tests/stage-install.sh
 
 .PHONY: native native-inspect native-worker native-register
 native:

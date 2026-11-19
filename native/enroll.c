@@ -48,7 +48,7 @@ check_duplicate (X1FoldSession *s, GBytes *existing, gint64 deadline, GCancellab
   gsize received;
   if (!x1fold_session_command (s, cmd, 13 + len, reply, sizeof reply, &received, deadline, cancel, error))
     return FALSE;
-  if (received == 2 && (read_le16 (reply) == 0x509 || read_le16 (reply) == 0x683))
+  if (x1fold_match_is_no_match (reply, received))
     return TRUE;
   struct x1fold_match_result result;
   if (!x1fold_parse_match_result (reply, received, &result, error))
