@@ -217,6 +217,24 @@ check_frame_quality (X1FoldSession *s, gint64 deadline, GCancellable *cancel,
   return TRUE;
 }
 
+gboolean
+x1fold_parse_match_result (const guint8 *reply, gsize size,
+                           struct x1fold_match_result *result, GError **error)
+{
+  if (size < 66 || le16 (reply) != 0 || le32 (reply + 18) != 36)
+    return invalid (error, "Invalid reader match statistics");
+
+  guint32 extra_len = le32 (reply + 22), identity_len = le32 (reply + 26);
+  if (extra_len > size - 66 || identity_len != size - 66 - extra_len)
+    return invalid (error, "Invalid reader match field lengths");
+
+  *result = (struct x1fold_match_result) {
+    .template_id = reply + 2, .identity = reply + 66 + extra_len,
+    .identity_len = identity_len, .score = le32 (reply + 30)
+  };
+  return TRUE;
+}
+
 static gboolean
 match_frame (X1FoldSession *s, const struct fold_bio_identity *print, const guint8 tuid[16],
              gint64 deadline, GCancellable *cancel, gboolean *matched, GError **error)
@@ -232,15 +250,15 @@ match_frame (X1FoldSession *s, const struct fold_bio_identity *print, const guin
     return TRUE;
   if (!ok_status (MATCH, reply, size, error))
     return FALSE;
-  if (size < 66 || le32 (reply + 18) != 36 || le32 (reply + 22) != 0 ||
-      le32 (reply + 26) != size - 66)
-    return invalid (error, "Unsupported reader match result");
-  if (!le32 (reply + 30))
+  struct x1fold_match_result result;
+  if (!x1fold_parse_match_result (reply, size, &result, error))
+    return FALSE;
+  if (!result.score)
     return TRUE;
   struct metadata meta;
-  if (!decode_metadata (reply + 66, size - 66, &meta, error))
+  if (!decode_metadata (result.identity, result.identity_len, &meta, error))
     return FALSE;
-  if (memcmp (meta.tuid, reply + 2, 16))
+  if (memcmp (meta.tuid, result.template_id, 16))
     return invalid (error, "Conflicting template IDs in reader match result");
   *matched = !memcmp (tuid, meta.tuid, 16) && belongs_to (&meta, print);
   return TRUE;

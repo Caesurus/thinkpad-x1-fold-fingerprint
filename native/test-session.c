@@ -117,7 +117,7 @@ test_verify (X1FoldSession *session, const char *mode, gint64 deadline)
   else
     g_assert_no_error (error);
   g_assert_cmpint (ok, ==, error == NULL);
-  g_assert_cmpint (matched, ==, g_str_equal (mode, "verify-match"));
+  g_assert_cmpint (matched, ==, g_str_equal (mode, "verify-match") || g_str_equal (mode, "verify-match-extra"));
 }
 
 struct progress {

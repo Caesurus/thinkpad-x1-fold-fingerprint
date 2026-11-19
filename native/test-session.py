@@ -187,7 +187,7 @@ def print_operation(sock, keys, mode, client=None):
             if before:
                 result = struct.pack("<H", 0x509)
                 if mode == "enroll-duplicate":
-                    result = bytes(2) + old + struct.pack("<IIII", 36, 0, 0, 100) + bytes(32)
+                    result = bytes(2) + old + struct.pack("<IIII", 36, 3, 0, 100) + bytes(32) + b"aux"
                 if mode == "enroll-missing-candidate":
                     result = struct.pack("<H", 0x683)
                 exchange(struct.pack("<BIII", 0x99, 1, len(before) * 16, 0) + b"".join(before), result)
@@ -272,8 +272,10 @@ def print_operation(sock, keys, mode, client=None):
     if mode == "verify-malformed-id":
         header = b"Z" * 16
     score = 0 if mode == "verify-zero-score" else 100
-    result = (bytes(2) + header + struct.pack("<IIII", 36, 0, len(data), score)
-              + bytes(32) + data)
+    extra = b"aux" if mode in ("verify-match-extra", "verify-other-account") else b""
+    extra_len = 0xffffffff if mode == "verify-malformed-extra-length" else len(extra)
+    result = (bytes(2) + header + struct.pack("<IIII", 36, extra_len, len(data), score)
+              + bytes(32) + extra + data)
     if mode == "verify-rejected":
         result = struct.pack("<H", 0x509)
     exchange(struct.pack("<BIII", 0x99, 1, 16, 0) + tuid, result)
@@ -422,7 +424,7 @@ if __name__ == "__main__":
                  "verify-other-finger", "verify-other-account", "verify-other-subject-type",
                  "verify-other-template", "verify-zero-score", "verify-rejected", "verify-malformed-id",
                  "verify-malformed-dupe", "verify-malformed-truncated", "verify-low-quality",
-                 "verify-malformed-metric", "delete-one", "delete-absent", "delete-shared",
+                 "verify-malformed-metric", "verify-match-extra", "verify-malformed-extra-length", "delete-one", "delete-absent", "delete-shared",
                  "delete-ambiguous", "delete-duplicate-id", "delete-wrong-serial", "delete-zero-count",
                  "delete-still-present", "delete-wrong-survivor", "delete-last",
                  "enroll-multiple", "enroll-empty", "enroll-existing-identity", "enroll-duplicate",
@@ -434,7 +436,7 @@ if __name__ == "__main__":
         run(sys.argv[1], case)
     print(f"{len(cases)} native session and biometric scenarios passed")
     if len(sys.argv) == 3:
-        workers = {"verify-match": [(4, 0)], "verify-rejected": [(5, 0)],
+        workers = {"verify-match": [(4, 0)], "verify-match-extra": [(4, 0)], "verify-rejected": [(5, 0)],
                    "verify-low-quality": [(2, 0)], "verify-low-quality-close-failed": [(6, 0)],
                    "verify-other-finger": [(5, 0)], "verify-malformed-metric": [(6, 0)],
                    "verify-missing-credential": [(6, 0)], "verify-close-failed": [(6, 0)],

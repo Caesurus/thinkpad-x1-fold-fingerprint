@@ -63,10 +63,12 @@ check_duplicate (X1FoldSession *s, GBytes *existing, gint64 deadline, GCancellab
     return FALSE;
   if (received == 2 && u16 (reply) == 0x509)
     return TRUE;
-  if (received >= 66 && !u16 (reply) && u32 (reply + 18) == 36 && !u32 (reply + 22) &&
-      u32 (reply + 26) == received - 66 && u32 (reply + 30))
+  struct x1fold_match_result result;
+  if (!x1fold_parse_match_result (reply, received, &result, error))
+    return FALSE;
+  if (result.score)
     for (gsize i = 0; i < len; i += 16)
-      if (!memcmp (ids + i, reply + 2, 16))
+      if (!memcmp (ids + i, result.template_id, 16))
         {
           g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_EXISTS, "Reader matched an existing fingerprint");
           return FALSE;
