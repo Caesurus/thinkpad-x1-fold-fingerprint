@@ -65,9 +65,10 @@ main (int argc, char **argv)
   gboolean capture = argc == 3 && !strcmp (argv[2], "--capture");
   gboolean paired = (argc == 2 || capture) && !strcmp (argv[1], "--paired");
   gboolean storage = argc == 2 && !strcmp (argv[1], "--host-storage");
-  if (argc != 1 && !paired && !storage)
+  gboolean serial = argc == 2 && !strcmp (argv[1], "--serial");
+  if (argc != 1 && !paired && !storage && !serial)
     {
-      fputs ("Usage: native-inspect [--host-storage | --paired [--capture]]\n", stderr);
+      fputs ("Usage: native-inspect [--serial | --host-storage | --paired [--capture]]\n", stderr);
       return 1;
     }
   const int fd = 3;
@@ -96,6 +97,13 @@ main (int argc, char **argv)
   if (!x1fold_read_version (fd, &info, FALSE, NULL, &error) ||
       (paired && !inspect_pairing (fd, &info, capture, &error)))
     goto failure;
+  if (serial)
+    {
+      for (guint i = 0; i < sizeof info.serial; i++)
+        printf ("%02x", info.serial[i]);
+      putchar ('\n');
+      return 0;
+    }
   if (storage)
     {
       if (info.product != 0x41 || info.major != 10 || info.minor != 1)

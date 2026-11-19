@@ -393,6 +393,20 @@ def paired_fixture(files):
     return sensor, host
 
 
+def check_inspect_serial(exe):
+    sensor, hid = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    with sensor, hid, subprocess.Popen(["sh", "-ec", 'exec 3<&0; exec "$1" --serial', "inspect", exe],
+                                      stdin=hid, stdout=subprocess.PIPE) as proc:
+        hid.close()
+        sensor.settimeout(4)
+        assert command(sensor) == b"\x01"
+        version = bytearray(38)
+        version[18:24] = bytes.fromhex("01ab02cd03ef")
+        respond(sensor, version)
+        out, _ = proc.communicate(timeout=4)
+        assert proc.returncode == 0 and out == b"01ab02cd03ef\n"
+
+
 def run_inspect(exe, mode):
     with tempfile.TemporaryDirectory() as directory:
         files = Path(directory)
@@ -495,6 +509,7 @@ if __name__ == "__main__":
             run_worker(sys.argv[2], mode, events)
         print(f"{len(workers)} native worker transactions passed")
     if len(sys.argv) >= 4:
+        check_inspect_serial(sys.argv[3])
         for mode in ("inspect-valid", "inspect-invalid-version"):
             run_inspect(sys.argv[3], mode)
         print("2 paired diagnostic close checks passed")
