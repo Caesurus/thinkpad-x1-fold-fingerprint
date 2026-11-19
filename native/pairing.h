@@ -17,7 +17,7 @@ GBytes *x1fold_create_host_request (EVP_PKEY *host_public, EVP_PKEY *issuer_sign
  * that issuer's trusted public key independently of the request. The caller
  * must have authorized registration on this particular reader. Provisioning
  * state 3 also occurs on owned readers. Never retry
- * an unconfirmed exchange automatically. Persist both returned certificates
+ * an unconfirmed exchange automatically. Read and validate HOST before PAIR. Persist both returned certificates
  * before opening a session. This function does not format, reset or reconnect. */
 X1FoldPairOutcome x1fold_register_host (int fd, const guint8 selected_serial[6],
                                        GBytes *issued_request, EVP_PKEY *host_key, EVP_PKEY *host_issuer,

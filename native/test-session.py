@@ -448,6 +448,21 @@ def inspect_pairing(exe, mode, files, keys, issued_host=None):
                 proc.kill()
 
 
+def registration_storage(sensor, present):
+    assert command(sensor) == b"\x3e"
+    directory = bytearray(28)
+    directory[14] = 1
+    directory[16] = 2
+    struct.pack_into("<I", directory, 24, 4096)
+    respond(sensor, directory)
+    assert command(sensor) == bytes.fromhex("400200ffff0000000000100000")
+    image = b""
+    if present:
+        for tag, value in ((1, bytes.fromhex("01000000")), (2, b"synthetic pairing")):
+            image += struct.pack("<HH", tag, len(value)) + hashlib.sha256(value).digest() + value
+    respond(sensor, struct.pack("<HIH", 0, 4096, 0) + image.ljust(4096, b"\xff"))
+
+
 def check_registration(register, inspect):
     with tempfile.TemporaryDirectory() as directory:
         files = Path(directory)
@@ -476,6 +491,7 @@ def check_registration(register, inspect):
                 try:
                     assert command(sensor) == b"\x01"
                     respond(sensor, firmware_reply())
+                    registration_storage(sensor, present=name == "fold-refused")
                     frame = command(sensor)
                     assert len(frame) == 401 and frame[0] == 0x93
                     body = frame[1:143]
@@ -485,6 +501,8 @@ def check_registration(register, inspect):
                     respond(sensor, response)
                     out, err = proc.communicate(timeout=4)
                     assert sensor.recv(1) == b"", "unexpected second registration command"
+                    if name == "fold-refused":
+                        assert b"HOST pairing record present" in err, err
                     assert proc.returncode == int(name != "accepted") and message in out + err, (out, err)
                 finally:
                     if proc.poll() is None:

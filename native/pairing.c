@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "pairing.h"
+#include "host-storage.h"
 #include "host-proof.h"
 #include <openssl/core_names.h>
 #include <string.h>
@@ -134,6 +135,12 @@ x1fold_register_host (int fd, const guint8 serial[6], GBytes *request, EVP_PKEY 
       g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED, "Unexpected pairing target or profile");
       return X1FOLD_PAIR_NOT_SENT;
     }
+  gboolean has_pairing;
+  if (!x1fold_check_host_storage_until (fd, &has_pairing, deadline, cancel, error))
+    {
+      g_prefix_error (error, "Reading HOST before registration: ");
+      return X1FOLD_PAIR_NOT_SENT;
+    }
   guint8 cmd[401] = {0x93}, reply[802];
   memcpy (cmd + 1, g_bytes_get_data (request, NULL), 400);
   if (g_cancellable_set_error_if_cancelled (cancel, error))
@@ -147,8 +154,8 @@ x1fold_register_host (int fd, const guint8 serial[6], GBytes *request, EVP_PKEY 
     return X1FOLD_PAIR_UNCONFIRMED;
   if (size == 2 && (reply[0] || reply[1]))
     {
-      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED, "Reader declined host registration (0x%04x)",
-                   reply[0] | (reply[1] << 8));
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED, "Reader declined host registration (0x%04x); HOST pairing record %s",
+                   reply[0] | (reply[1] << 8), has_pairing ? "present" : "absent");
       return X1FOLD_PAIR_REFUSED;
     }
   return x1fold_check_pair_response (&version, host, reply, size, host_cert, sensor_cert, error)

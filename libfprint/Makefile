@@ -92,11 +92,11 @@ $(BUILD_DIR)/session.o: ../native/session.c ../native/session.h ../native/sensor
 $(BUILD_DIR)/test-session: ../native/test-session.c $(BUILD_DIR)/libx1fold-native.a
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(GIO_CFLAGS) $^ $(LDFLAGS) -Wl,--wrap=x1fold_sensor_public_key,--wrap=x1fold_session_status,--wrap=ioctl $(GIO_LIBS) $(CRYPTO_LIBS) -o "$@"
 
-$(BUILD_DIR)/pairing.o: ../native/pairing.c ../native/pairing.h ../native/host-proof.h ../native/sensor-certificate.h transport.h | $(BUILD_DIR)
+$(BUILD_DIR)/pairing.o: ../native/pairing.c ../native/pairing.h ../native/host-storage.h ../native/host-proof.h ../native/sensor-certificate.h transport.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -fPIC $(GIO_CFLAGS) -c $< -o "$@"
 
 $(BUILD_DIR)/test-pairing: ../native/test-pairing.c $(BUILD_DIR)/libx1fold-native.a
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(GIO_CFLAGS) $^ $(LDFLAGS) -Wl,--wrap=x1fold_check_fd,--wrap=x1fold_session_status,--wrap=x1fold_exchange $(GIO_LIBS) $(CRYPTO_LIBS) -o "$@"
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(GIO_CFLAGS) $^ $(LDFLAGS) -Wl,--wrap=x1fold_check_fd,--wrap=x1fold_session_status,--wrap=x1fold_exchange,--wrap=x1fold_check_host_storage_until $(GIO_LIBS) $(CRYPTO_LIBS) -o "$@"
 
 $(BUILD_DIR)/libx1fold-native.a: $(BUILD_DIR)/host-storage.o $(BUILD_DIR)/pairing.o $(BUILD_DIR)/credentials.o $(BUILD_DIR)/enroll.o $(BUILD_DIR)/verify.o $(BUILD_DIR)/capture.o $(BUILD_DIR)/session.o $(BUILD_DIR)/transport.o $(BUILD_DIR)/sensor-certificate.o $(BUILD_DIR)/handshake.o $(BUILD_DIR)/host-proof.o
 	$(AR) rcs "$@" $^

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pefile
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric import ec, utils
 from unicorn import Uc, UC_ARCH_X86, UC_HOOK_CODE, UC_MODE_64
 from unicorn.x86_const import (UC_X86_REG_RAX, UC_X86_REG_RCX, UC_X86_REG_RDX,
                                UC_X86_REG_R8, UC_X86_REG_R9, UC_X86_REG_RIP, UC_X86_REG_RSP)
@@ -97,6 +97,16 @@ def hid_guest(folder):
     return guest
 
 
+def test_pair_status(folder, build):
+    # These are the two routines that the HID transport invokes on the first
+    # reply word. 0x7fff exercises the default branch of the v153 converter.
+    for raw, expected in ((0, 0), (0x403, 0x76), (0x404, 0x68), (0x44f, 0xca), (0x7fff, 0xca)):
+        guest = hid_guest(folder)
+        status = guest.call(0xb7440, raw)
+        assert guest.call(0x8b560, status) == expected, hex(raw)
+    print("Fold PAIR refusal maps to the HID DLL's generic error branch", flush=True)
+
+
 def check_pair_command(folder, request, transport_status):
     guest = hid_guest(folder)
     unit = guest.alloc(bytes(32))
@@ -121,6 +131,41 @@ def check_pair_command(folder, request, transport_status):
     assert guest.read(output, len(records)) == (untouched if transport_status else records)
 
 
+def check_signed_request(guest, context, request, issuer):
+    # Exercise the public hash-and-pack block using the same test signature as
+    # the native request. ECDSA can produce different signatures on separate calls.
+    sp = SCRATCH + 0x1e000
+    guest.cpu.reg_write(UC_X86_REG_RSP, sp)
+    guest.put64(sp + 0x60, context + 8)
+    signature_output = guest.alloc(bytes(145))
+    guest.put64(sp + 0x40, signature_output)
+    guest.cpu.mem_write(sp + 0x38, struct.pack("<I", 145))
+    length, = struct.unpack_from("<H", request, 142)
+    signature = request[144:144 + length]
+
+    def hash_body(data, size, digest, algorithm):
+        assert size == 142 and algorithm == 0
+        guest.cpu.mem_write(digest, hashlib.sha256(guest.read(data, size)).digest())
+        return 0
+
+    def test_signature(_handle, _key, digest, size):
+        assert size == 32
+        issuer.verify(signature, guest.read(digest, size), ec.ECDSA(utils.Prehashed(hashes.SHA256())))
+        frame = guest.cpu.reg_read(UC_X86_REG_RSP)
+        assert guest.u64(frame + 40) == signature_output
+        guest.cpu.mem_write(signature_output, signature)
+        guest.cpu.mem_write(guest.u64(frame + 48), struct.pack("<I", length))
+        return 0
+
+    guest.service(0x74570, hash_body)
+    guest.service(0xb8d60, test_signature)
+    end = guest.base + 0x906a7
+    guest.cpu.emu_start(guest.base + 0x905cc, end, count=10000)
+    assert guest.cpu.reg_read(UC_X86_REG_RIP) == end
+    assert guest.mock_calls.get(guest.base + 0xb8d60) == 1
+    assert guest.read(guest.u64(context + 0x1b8), 400) == request
+
+
 def test_request(folder, build):
     registration = runpy.run_path(str(NATIVE / "test-register.py"))
     issuer = ec.generate_private_key(ec.SECP256R1())
@@ -131,7 +176,9 @@ def test_request(folder, build):
         guest = hid_guest(folder)
         coords = guest.alloc(point.x.to_bytes(68, "little") + point.y.to_bytes(68, "little"))
         ctx = guest.alloc(bytes(512))
-        guest.cpu.mem_write(ctx, struct.pack("<III", 1, 0, 23))
+        # First word of the public curve profile copied by tudorSecurityDoPair.
+        curve, = struct.unpack("<I", guest.read(guest.base + 0x15ced0, 4))
+        guest.cpu.mem_write(ctx, struct.pack("<III", 1, 0, curve))
         guest.put64(ctx + 0x1b0, coords)
         # Stop at the signing call. The subject, field order and length come from the DLL.
         guest.call(0x90740, ctx, stop_at=0x90310)
@@ -144,12 +191,11 @@ def test_request(folder, build):
                                         root / "request").check_returncode()
             request = (root / "request").read_bytes()
             assert len(request) == 400 and request[:142] == dll_body
-            n = int.from_bytes(request[142:144], "little")
-            issuer.public_key().verify(request[144:144+n], dll_body, ec.ECDSA(hashes.SHA256()))
+            check_signed_request(guest, ctx, request, issuer.public_key())
         for status in (0, 0x403):
             check_pair_command(folder, request, status)
     print("6 simulated PAIR transfers checked using native requests and the HID DLL", flush=True)
-    print("3 host request bodies matched the HID DLL at its signing boundary", flush=True)
+    print("3 full host requests matched the HID DLL with a test issuer signature", flush=True)
 
 
 def record(tag, payload):
@@ -302,5 +348,5 @@ if __name__ == "__main__":
     parser.add_argument("dll_directory", type=Path)
     parser.add_argument("build_directory", type=Path)
     args = parser.parse_args()
-    for test in (test_request, test_storage, test_verify):
+    for test in (test_request, test_pair_status, test_storage, test_verify):
         test(args.dll_directory, args.build_directory.resolve())

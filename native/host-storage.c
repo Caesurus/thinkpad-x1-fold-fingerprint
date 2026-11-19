@@ -57,14 +57,14 @@ inspect_tags (const guint8 *data, gsize size, gboolean *has_pairing, GError **er
 }
 
 gboolean
-x1fold_check_host_storage (int fd, gboolean *has_pairing, GError **error)
+x1fold_check_host_storage_until (int fd, gboolean *has_pairing, gint64 deadline,
+                                 GCancellable *cancel, GError **error)
 {
   *has_pairing = FALSE;
-  gint64 deadline = g_get_monotonic_time () + 5 * G_TIME_SPAN_SECOND;
   const guint8 info = INFO;
   guint8 directory[16 + 16 * 12];
   gsize n;
-  if (!x1fold_exchange (fd, &info, 1, directory, sizeof directory, &n, deadline, NULL, error))
+  if (!x1fold_exchange (fd, &info, 1, directory, sizeof directory, &n, deadline, cancel, error))
     return FALSE;
   if (n < 16 || read_le16 (directory) || n - 16 != read_le16 (directory + 14) * 12u)
     return invalid (error, "Invalid partition directory");
@@ -81,11 +81,19 @@ x1fold_check_host_storage (int fd, gboolean *has_pairing, GError **error)
 
   const guint8 cmd[13] = {READ_PARTITION, HOST, 0, 0xff, 0xff, 0, 0, 0, 0, 0, 0x10};
   guint8 reply[8 + FOLD_HOST_SIZE];
-  gboolean ok = x1fold_exchange (fd, cmd, sizeof cmd, reply, sizeof reply, &n, deadline, NULL, error);
+  gboolean ok = x1fold_exchange (fd, cmd, sizeof cmd, reply, sizeof reply, &n, deadline, cancel, error);
   if (ok && (n != sizeof reply || read_le16 (reply) || read_le32 (reply + 2) != FOLD_HOST_SIZE))
     ok = invalid (error, "Invalid Fold HOST read reply");
   if (ok)
     ok = inspect_tags (reply + 8, FOLD_HOST_SIZE, has_pairing, error);
   explicit_bzero (reply, sizeof reply);
   return ok;
+}
+
+gboolean
+x1fold_check_host_storage (int fd, gboolean *has_pairing, GError **error)
+{
+  return x1fold_check_host_storage_until (fd, has_pairing,
+                                          g_get_monotonic_time () + 5 * G_TIME_SPAN_SECOND,
+                                          NULL, error);
 }

@@ -9,7 +9,8 @@
 enum response { ALLOW, REFUSE, SHORT, WRONG_KEY };
 static enum response behavior;
 static guint reads, writes;
-static gboolean busy;
+static gboolean busy, storage_error;
+static guint storage_checks;
 static guint8 provisioning = 3;
 static guint8 security_low = 0x0b;
 static guint8 record[400], sensor[400], serial[6] = {1,2,3,4,5,6};
@@ -24,6 +25,22 @@ gboolean
 __wrap_x1fold_session_status (int fd, gboolean *active, GError **error)
 {
   *active = busy;
+  return TRUE;
+}
+
+gboolean
+__wrap_x1fold_check_host_storage_until (int fd, gboolean *present, gint64 deadline,
+                                       GCancellable *cancel, GError **error)
+{
+  g_assert_cmpuint (reads, ==, 1);
+  g_assert_cmpuint (writes, ==, 0);
+  storage_checks++;
+  if (storage_error)
+    {
+      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA, "Invalid HOST directory");
+      return FALSE;
+    }
+  *present = FALSE;
   return TRUE;
 }
 
@@ -75,11 +92,12 @@ attempt (EVP_PKEY *host, EVP_PKEY *issuer, const guint8 target[6], guint reads_e
   g_autoptr(GBytes) request = g_bytes_new_static (record, sizeof record);
   g_autoptr(GBytes) host_cert = NULL, sensor_cert = NULL;
   g_autoptr(GError) error = NULL;
-  reads = writes = 0;
+  reads = writes = storage_checks = 0;
   g_assert_cmpint (x1fold_register_host (0, target, request, host, issuer, &host_cert, &sensor_cert,
                                          g_get_monotonic_time () + G_TIME_SPAN_SECOND, NULL, &error), ==, expected);
   g_assert_cmpuint (reads, ==, reads_expected);
   g_assert_cmpuint (writes, ==, writes_expected);
+  g_assert_cmpuint (storage_checks, ==, writes_expected || storage_error);
   if (expected == X1FOLD_PAIR_ACCEPTED)
     {
       g_assert_no_error (error);
@@ -136,6 +154,9 @@ main (int argc, char **argv)
   security_low = 0x0a;
   attempt (host, issuer, serial, 1, 0, X1FOLD_PAIR_NOT_SENT);
   security_low = 0x0b;
+  storage_error = TRUE;
+  attempt (host, issuer, serial, 1, 0, X1FOLD_PAIR_NOT_SENT);
+  storage_error = FALSE;
   behavior = REFUSE;
   attempt (host, issuer, serial, 1, 1, X1FOLD_PAIR_REFUSED);
   behavior = SHORT;
