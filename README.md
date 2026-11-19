@@ -4,7 +4,9 @@ This driver lets KDE and `fprintd` enroll and verify fingers on the USB-connecte
 
 The tested system ran **Ubuntu 26.04.1 on x86-64**, Ubuntu's libfprint 1.95.1 TOD interface, and fprintd 1.94.5.
 
-The default build on `native-backend` produces a native Linux worker and libfprint plugin. On the physical Fold, this worker enrolled the right index, matched it, rejected a right-middle touch, recovered from cancellation without a keyboard reset, enrolled and deleted a temporary right-middle print, and matched the right index afterward. The owner confirmed a right-index KDE unlock. [Architecture diagrams and verification status](docs/native-backend.md)
+The default build on `main` produces a native Linux worker and libfprint plugin. On the physical Fold, this worker enrolled the right index, matched it, rejected a right-middle touch, recovered from cancellation without a keyboard reset, enrolled and deleted a temporary right-middle print, and matched the right index afterward. Right-index verification passed after suspend and reboot, and KDE unlocked with the right index after reboot. [Architecture diagrams and verification status](docs/native-backend.md)
+
+**First-time pairing limit:** The tested Fold is already paired to this Linux installation. A fresh reader also needs an issuer profile that its firmware accepts. The private Fold profile is not distributed here, so this repository alone cannot yet provision another owner's unpaired reader. The driver does not use Windows DLLs at setup or runtime. Read the [install and recovery guide](docs/install-and-recovery.md) before replacing a system driver.
 
 ## Native build and staged installation
 
@@ -21,9 +23,9 @@ To compare the native code directly with the extracted vendor DLLs without a rea
 
 The stage contains the TOD plugin, the native worker, the systemd socket and its service template. The static library is linked into the worker. These commands build and stage offline. A staged installation does not contact systemd or the keyboard.
 
-To activate the native backend on the target machine, run `sudo ./install.sh`. It replaces the installed libfprint module and service, reloads systemd, and retires any legacy worker and Python launchers. It leaves PAM, fingerprint enrollments and credential stores in place. A desktop with password unlock can run this backend before the pairing credentials are available. Fingerprint operations then return an error until a usable pairing is present.
+To activate the native backend on the target machine, run `sudo ./install.sh`. It backs up the files it changes, replaces the libfprint module and service, reloads systemd, and retires any legacy worker and Python launchers. `sudo ./install.sh --rollback` restores the immediately previous files and socket state. Both commands leave PAM, fingerprint enrollments and pairing credentials in place. A desktop with password unlock can run this backend before the pairing credentials are available. Fingerprint operations then return an error until a usable pairing is present. [Detailed install, verification and recovery steps](docs/install-and-recovery.md)
 
-For fingerprint operations systemd loads these three credentials from the system credential store. Use the same name for the encrypted file and its bound credential name under `/etc/credstore.encrypted/`.
+For fingerprint operations systemd supplies these three named credentials. They may be stored in a machine-encrypted service drop-in or as matching encrypted files under `/etc/credstore.encrypted/`.
 
 | Credential name | Contents |
 | --- | --- |
