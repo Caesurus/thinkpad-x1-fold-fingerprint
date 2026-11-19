@@ -91,6 +91,20 @@ RVAs below refer to the Fold v153 PE images. The package and file SHA-256 values
 | HID | `tudorTlsInitCtx` 0x8d090 | Calls public-key selection 0x95680, pairing-data retrieval 0x8fbd0 and TLS initialization 0x95940. Wrap and unwrap routines are at 0x96f80 and 0x97240. |
 | HID | Capture start/process/finish at 0x7ba50, 0x7be70 and 0x7c760 | The DLL also contains `misIdentifyMatchCmd` at 0xa48f0. Its name alone cannot establish that the Fold uses it for one-to-one verification. |
 
+### Device management outside a fingerprint scan
+
+The table covers the Windows adapters in the Fold's N3LGF05W package. An entry in a Windows interface table can be a stub. The calibration and indicator results below come from the return paths in the adapter binary.
+
+| Function | Fold v153 behavior | Native coverage |
+| --- | --- | --- |
+| Firmware and sensor configuration updates | The adapter contains separate firmware and IOTA configuration update routines. Both corresponding HID handlers call `CBiometricDevice::DoDeviceUpdate`, which calls `vfmDeviceUpdateProcess`. The HID DLL contains one exact copy of the 417,332-byte main firmware container for product 0x41, build 3399660. The adapter contains zero copies. | The native diagnostic reads the installed firmware version. On this Fold it reported build 3654703, which is newer than the packaged build. The native driver implements neither flashing nor persistent IOTA updates. |
+| Calibration | The engine's select-format and query-data callbacks and the sensor's query-formats, set-format and accept-data callbacks all return `E_NOTIMPL`. The HID image also has a separate `OnCalibrate` handler. | The native capture path sets event masks and evaluates sample quality. It exposes no standalone calibration operation. The Windows adapter callbacks provide no calibration procedure to reproduce. |
+| Indicator | Both Windows sensor indicator callbacks return `0x8009803c`, or `WINBIO_E_UNSUPPORTED_PROPERTY`. | Linux prompts for a touch through the client. Physical indicator behavior is unverified. [Microsoft WinBio status codes](https://learn.microsoft.com/en-us/windows/win32/secbiomet/client-error-codes) |
+| Power and startup | The adapter has sensor and storage power-change callbacks. The HID driver handles power policy and keyboard-specific power-on. In an earlier physical startup test, both the OEM power-on and transport-initialization reports completed. The subsequent firmware, configuration and storage-layout reads returned the same results as before. | Native discovery read the connected reader's identity and firmware. Suspend, resume and the first authenticated scan after a USB reconnect still require physical validation. |
+| Storage and ownership | The OEM driver distinguishes its HOST pairing store, ownership reset and biometric record management. An OEM reconnect previously reused the pairing with formatting disabled. | The native worker addresses individual biometric records and reads host pairing credentials from systemd. It has no partition-format, ownership-reset or protected OEM-record migration operation. |
+
+For this keyboard the observed native failure occurs while the worker is loading its pairing credentials, before it sends a capture command. The firmware comparison and adapter return paths give no evidence that flashing the packaged image or invoking a calibration callback would resolve that failure.
+
 ### Verification across the Windows driver boundary
 
 The adapter and HID DLL meet at Windows device control `0x442058`. In the HID dispatcher, the conditional at 0x814f selects the handler at 0x158e4. The handler invokes vtable slot 0x70. For the `CEisMisEIV` implementation, the vtable at 0xc9530 resolves that slot to 0x10f10, which invokes slot 0x110. That target is `CEisMisEIV::AuthenticateUserStorageOnSensor` at 0x10f40. Its direct call graph reaches `vfmUtilAuthPrep`, `vfmUtilAuthGetUpdatedTemplate` and `vfmUtilAuthUnPrep`. This ties the WinBio callback to a specific sensor-storage implementation. A hardware trace still needs to confirm the selected implementation and identify the authenticated response that supplies the verdict.
