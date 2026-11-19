@@ -3,6 +3,11 @@
 #include "capture.h"
 #include "../libfprint/biometric-ipc.h"
 
+/* FOLD_RETRY means capture completed but its quality precluded comparison. */
+enum fold_bio_event x1fold_verify_result (X1FoldSession *session, const struct fold_bio_identity *print,
+                                          gint64 deadline, GCancellable *cancel, void (*ready) (gpointer),
+                                          gpointer user_data, GError **error);
+
 /* Verify requires an existing fprintd print on this authenticated reader.
  * TRUE means the operation completed. matched is set only for a fresh,
  * successful match to the requested template, WinBio subject and finger. */

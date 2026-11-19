@@ -101,10 +101,8 @@ run_operation (int hid, const struct fold_bio_frame *request, struct monitor *mo
   gboolean ok;
   if (request->op == FOLD_VERIFY)
     {
-      gboolean matched;
-      ok = x1fold_verify_print (session, print, deadline, cancel, NULL, NULL, &matched, error);
-      if (ok)
-        result = matched ? FOLD_MATCH : FOLD_NO_MATCH;
+      result = x1fold_verify_result (session, print, deadline, cancel, NULL, NULL, error);
+      ok = result != FOLD_ERROR;
     }
   else if (request->op == FOLD_ENROLL)
     {

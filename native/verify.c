@@ -274,26 +274,40 @@ x1fold_enrollment_directory (X1FoldSession *s, const struct fold_bio_identity *p
   return g_steal_pointer (&list);
 }
 
+enum fold_bio_event
+x1fold_verify_result (X1FoldSession *s, const struct fold_bio_identity *print,
+                      gint64 deadline, GCancellable *cancel, void (*ready) (gpointer),
+                      gpointer user_data, GError **error)
+{
+  guint8 tuid[16];
+  gboolean found, acceptable;
+  g_autoptr(GBytes) list = x1fold_enrollment_directory (s, print, tuid, &found, deadline, cancel, error);
+  if (!list)
+    return FOLD_ERROR;
+  if (!found)
+    {
+      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND, "Requested enrollment missing on reader");
+      return FOLD_ERROR;
+    }
+  if (!x1fold_capture_frame (s, X1FOLD_CAPTURE_VERIFY, deadline, cancel, ready, user_data, error) ||
+      !check_frame_quality (s, deadline, cancel, &acceptable, error))
+    return FOLD_ERROR;
+  if (!acceptable)
+    return FOLD_RETRY;
+  gboolean matched = FALSE;
+  if (!match_frame (s, print, tuid, deadline, cancel, &matched, error))
+    return FOLD_ERROR;
+  return matched ? FOLD_MATCH : FOLD_NO_MATCH;
+}
+
 gboolean
 x1fold_verify_print (X1FoldSession *s, const struct fold_bio_identity *print,
                      gint64 deadline, GCancellable *cancel, void (*ready) (gpointer),
                      gpointer user_data, gboolean *matched, GError **error)
 {
-  *matched = FALSE;
-  guint8 tuid[16];
-  gboolean found, acceptable;
-  g_autoptr(GBytes) list = x1fold_enrollment_directory (s, print, tuid, &found, deadline, cancel, error);
-  if (!list)
-    return FALSE;
-  if (!found)
-    {
-      g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND, "Requested enrollment missing on reader");
-      return FALSE;
-    }
-  if (!x1fold_capture_frame (s, X1FOLD_CAPTURE_VERIFY, deadline, cancel, ready, user_data, error) ||
-      !check_frame_quality (s, deadline, cancel, &acceptable, error))
-    return FALSE;
-  return !acceptable || match_frame (s, print, tuid, deadline, cancel, matched, error);
+  enum fold_bio_event result = x1fold_verify_result (s, print, deadline, cancel, ready, user_data, error);
+  *matched = result == FOLD_MATCH;
+  return result != FOLD_ERROR;
 }
 
 gboolean

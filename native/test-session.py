@@ -255,10 +255,11 @@ def print_operation(sock, keys, mode, client=None):
     if mode == "verify-client-cancel":
         return capture(sock, keys, "capture-cancel-wait", seq, client)
     seq = capture(sock, keys, "capture-verify", seq)
-    quality = 49 if mode == "verify-low-quality" else 50
+    low_quality = mode in ("verify-low-quality", "verify-low-quality-close-failed")
+    quality = 49 if low_quality else 50
     metric = 1 if mode == "verify-malformed-metric" else 0x10000
     exchange(struct.pack("<BI", 0x9d, 0x10000), struct.pack("<HIIII", 0, metric, 8, quality, 0))
-    if mode in ("verify-low-quality", "verify-malformed-metric"):
+    if low_quality or mode == "verify-malformed-metric":
         return seq
     header = b"Y" * 16 if mode == "verify-other-template" else tuid
     data = tags(template=header, finger=3 if mode == "verify-other-finger" else 2,
@@ -351,7 +352,7 @@ def reader(sock, mode, worker_keys=None, client=None):
     if mode.startswith("record-"):
         return
     assert open_record(command(sock), keys[:32], keys[64:68], start + probes, 21) == b"\x01\x00"
-    alert = b"\x02\x28" if mode in ("close-invalid", "verify-close-failed") else b"\x01\x00"
+    alert = b"\x02\x28" if mode in ("close-invalid", "verify-close-failed", "verify-low-quality-close-failed") else b"\x01\x00"
     respond(sock, send_record(21, alert, keys[32:64], keys[68:], start + probes))
 
 
@@ -434,6 +435,8 @@ if __name__ == "__main__":
     print(f"{len(cases)} native session and biometric scenarios passed")
     if len(sys.argv) == 3:
         workers = {"verify-match": [(4, 0)], "verify-rejected": [(5, 0)],
+                   "verify-low-quality": [(2, 0)], "verify-low-quality-close-failed": [(6, 0)],
+                   "verify-other-finger": [(5, 0)], "verify-malformed-metric": [(6, 0)],
                    "verify-missing-credential": [(6, 0)], "verify-close-failed": [(6, 0)],
                    "verify-client-cancel": [(7, 0)], "enroll-duplicate": [(9, 0)],
                    "enroll-multiple": [(1, 1), (2, 0), (1, 2), (3, 0)], "delete-one": [(8, 0)]}
