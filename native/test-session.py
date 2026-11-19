@@ -296,14 +296,21 @@ def print_operation(sock, keys, mode, client=None, quality=None, match_reply=Non
     return seq
 
 
-def reader(sock, mode, worker_keys=None, client=None, quality=None, match_reply=None):
+def firmware_reply():
+    version = bytearray(38)
+    version[10:12] = bytes((10, 1))
+    version[13] = 0x41
+    version[18:24] = bytes(range(1, 7))
+    version[24:26] = bytes.fromhex("0ba1")
+    version[37] = 3
+    return version
+
+
+def reader(sock, mode, worker_keys=None, client=None, quality=None, match_reply=None, *, issued_host=None):
     if worker_keys is not None:
         identity, host = worker_keys
         assert command(sock) == b"\x01"
-        version = bytearray(38)
-        version[10:12] = bytes([10, 1])
-        version[13] = 0x41
-        version[18:24] = bytes(range(1, 7))
+        version = firmware_reply()
         respond(sock, version)
     else:
         identity = ec.generate_private_key(ec.SECP256R1())
@@ -325,6 +332,8 @@ def reader(sock, mode, worker_keys=None, client=None, quality=None, match_reply=
     size = int.from_bytes(auth[7:9], "big")
     proof = auth[9:9 + size]
     assert proof[:12] == bytes.fromhex("0b0001980001900001900000")
+    if issued_host is not None:
+        assert proof[12:412] == issued_host
     subject = host.public_numbers()
     assert int.from_bytes(proof[16:84], "little") == subject.x
     assert int.from_bytes(proof[84:152], "little") == subject.y
@@ -377,7 +386,7 @@ def reader(sock, mode, worker_keys=None, client=None, quality=None, match_reply=
     respond(sock, send_record(21, alert, keys[32:64], keys[68:], start + probes))
 
 
-def paired_fixture(files):
+def pairing_material(files):
     sensor = ec.generate_private_key(ec.SECP256R1())
     identity = ec.generate_private_key(ec.SECP256R1())
     host = identity.public_key()
@@ -386,11 +395,16 @@ def paired_fixture(files):
                  + public.y.to_bytes(68, "little") + bytes.fromhex("00022000")).ljust(400, b"\0")
     sensor_cert = b"TEST" + sensor.public_key().public_bytes(
         serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
-    (files / "x1fold-native.sensor.cert").write_bytes(sensor_cert.ljust(400, b"\0"))
-    (files / "x1fold-native.host.cert").write_bytes(host_cert)
     (files / "x1fold-native.host-key.pem").write_bytes(identity.private_bytes(
         serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
-    return sensor, host
+    return (sensor, host), host_cert, sensor_cert.ljust(400, b"\0")
+
+
+def paired_fixture(files):
+    keys, host_cert, sensor_cert = pairing_material(files)
+    (files / "x1fold-native.host.cert").write_bytes(host_cert)
+    (files / "x1fold-native.sensor.cert").write_bytes(sensor_cert)
+    return keys
 
 
 def check_inspect_serial(exe):
@@ -411,23 +425,78 @@ def run_inspect(exe, mode):
     with tempfile.TemporaryDirectory() as directory:
         files = Path(directory)
         keys = paired_fixture(files)
-        sensor, hid = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
-        args = ["sh", "-ec", 'exec 3<&0 4<"$1" 5<"$2" 6<"$3"; exec "$4" --paired',
-                "inspect-peer", files / "x1fold-native.sensor.cert", files / "x1fold-native.host.cert",
-                files / "x1fold-native.host-key.pem", exe]
-        with sensor, hid, subprocess.Popen(args, stdin=hid, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
-            hid.close()
-            sensor.settimeout(4)
-            try:
-                reader(sensor, mode, keys)
-                out, err = proc.communicate(timeout=4)
-                if mode == "inspect-valid":
-                    assert proc.returncode == 0 and b"Verified paired session, closed" in out, err
-                else:
-                    assert proc.returncode == 1 and b"Invalid authenticated firmware response" in err, err
-            finally:
-                if proc.poll() is None:
-                    proc.kill()
+        inspect_pairing(exe, mode, files, keys)
+
+
+def inspect_pairing(exe, mode, files, keys, issued_host=None):
+    sensor, hid = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    args = ["sh", "-ec", 'exec 3<&0 4<"$1" 5<"$2" 6<"$3"; exec "$4" --paired',
+            "inspect-peer", files / "x1fold-native.sensor.cert", files / "x1fold-native.host.cert",
+            files / "x1fold-native.host-key.pem", exe]
+    with sensor, hid, subprocess.Popen(args, stdin=hid, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
+        hid.close()
+        sensor.settimeout(4)
+        try:
+            reader(sensor, mode, keys, issued_host=issued_host)
+            out, err = proc.communicate(timeout=4)
+            if mode == "inspect-valid":
+                assert proc.returncode == 0 and b"Verified paired session, closed" in out, err
+            else:
+                assert proc.returncode == 1 and b"Invalid authenticated firmware response" in err, err
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+
+
+def check_registration(register, inspect):
+    with tempfile.TemporaryDirectory() as directory:
+        files = Path(directory)
+        keys, host_cert, sensor_cert = pairing_material(files)
+        # The simulated reader supplies a unique 32-byte host credential.
+        issued = bytearray(host_cert)
+        issued[144:176] = os.urandom(32)
+        accepted = bytes(2) + issued + sensor_cert
+        issuer = ec.generate_private_key(ec.SECP256R1())
+        issuer_file = files / "issuer.pem"
+        issuer_file.write_bytes(issuer.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                                    serialization.NoEncryption()))
+        for name, response, message in (
+            ("refused", bytes.fromhex("0304"), b"Reader refused registration"),
+            ("truncated", accepted[:-1], b"Registration outcome unknown"),
+            ("accepted", accepted, b"Reader accepted registration"),
+        ):
+            output = files / name
+            args = ["sh", "-ec", 'exec 3<&0 4<"$1"; exec "$2" register 010203040506 "$3" "$4"',
+                    "register-peer", files / "x1fold-native.host-key.pem", register, issuer_file.as_uri(), output]
+            sensor, hid = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+            with sensor, hid, subprocess.Popen(args, stdin=hid, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
+                hid.close()
+                sensor.settimeout(4)
+                try:
+                    assert command(sensor) == b"\x01"
+                    respond(sensor, firmware_reply())
+                    frame = command(sensor)
+                    assert len(frame) == 401 and frame[0] == 0x93
+                    body = frame[1:143]
+                    assert body[:141] == issued[:141] and body[141] == 0
+                    length, = struct.unpack_from("<H", frame, 143)
+                    issuer.public_key().verify(frame[145:145 + length], body, ec.ECDSA(hashes.SHA256()))
+                    respond(sensor, response)
+                    out, err = proc.communicate(timeout=4)
+                    assert sensor.recv(1) == b"", "unexpected second registration command"
+                    assert proc.returncode == int(name != "accepted") and message in out + err, (out, err)
+                finally:
+                    if proc.poll() is None:
+                        proc.kill()
+            saved = output.read_bytes()
+            assert output.stat().st_mode & 0o777 == 0o600
+            if name == "accepted":
+                assert saved == accepted
+                (files / "x1fold-native.host.cert").write_bytes(saved[2:402])
+                (files / "x1fold-native.sensor.cert").write_bytes(saved[402:])
+                inspect_pairing(inspect, "inspect-valid", files, keys, issued_host=issued)
+            else:
+                assert saved == bytes.fromhex("ffff") + bytes(800)
 
 
 def run_worker(exe, mode, expected_events, *, quality=None, match_reply=None):
@@ -513,3 +582,6 @@ if __name__ == "__main__":
         for mode in ("inspect-valid", "inspect-invalid-version"):
             run_inspect(sys.argv[3], mode)
         print("2 paired diagnostic close checks passed")
+    if len(sys.argv) >= 5:
+        check_registration(sys.argv[4], sys.argv[3])
+        print("Native registration refusal, incomplete response and accepted pairing with fresh reconnect passed")

@@ -37,9 +37,9 @@ $(BUILD_DIR)/test-transport: tests/transport.c transport.c transport.h wire.h | 
 $(BUILD_DIR)/test-worker-channel.preload: tests/worker-channel.c biometric-ipc.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -fPIC -shared $< $(LDFLAGS) -o "$@"
 
-check: all $(BUILD_DIR)/test-inspect $(BUILD_DIR)/test-host-storage $(BUILD_DIR)/native-inspect $(BUILD_DIR)/test-worker-channel.preload $(BUILD_DIR)/native-register $(BUILD_DIR)/native-worker $(BUILD_DIR)/test-worker $(BUILD_DIR)/test-session $(BUILD_DIR)/test-host-proof $(BUILD_DIR)/test-handshake $(BUILD_DIR)/test-certificate $(BUILD_DIR)/test-pairing $(BUILD_DIR)/test-transport $(BUILD_DIR)/test-biometric-ipc $(BUILD_DIR)/test-print-identity
+check: all $(BUILD_DIR)/test-register $(BUILD_DIR)/test-inspect $(BUILD_DIR)/test-host-storage $(BUILD_DIR)/native-inspect $(BUILD_DIR)/test-worker-channel.preload $(BUILD_DIR)/native-register $(BUILD_DIR)/native-worker $(BUILD_DIR)/test-worker $(BUILD_DIR)/test-session $(BUILD_DIR)/test-host-proof $(BUILD_DIR)/test-handshake $(BUILD_DIR)/test-certificate $(BUILD_DIR)/test-pairing $(BUILD_DIR)/test-transport $(BUILD_DIR)/test-biometric-ipc $(BUILD_DIR)/test-print-identity
 	$(PYTHON) -B ../native/test-register.py "$(BUILD_DIR)/native-register"
-	$(PYTHON) -B ../native/test-session.py "$(BUILD_DIR)/test-session" "$(BUILD_DIR)/test-worker" "$(BUILD_DIR)/test-inspect"
+	$(PYTHON) -B ../native/test-session.py "$(BUILD_DIR)/test-session" "$(BUILD_DIR)/test-worker" "$(BUILD_DIR)/test-inspect" "$(BUILD_DIR)/test-register"
 	$(BUILD_DIR)/test-host-storage
 	$(BUILD_DIR)/test-host-proof
 	$(BUILD_DIR)/test-handshake
@@ -126,5 +126,5 @@ $(BUILD_DIR)/native-worker: ../native/worker.c biometric-ipc.c $(BUILD_DIR)/tran
 $(BUILD_DIR)/test-worker: ../native/test-worker.c ../native/test-reader.c $(BUILD_DIR)/transaction.o $(BUILD_DIR)/libx1fold-native.a
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(GIO_CFLAGS) $^ $(LDFLAGS) -Wl,--wrap=x1fold_sensor_public_key,--wrap=x1fold_session_status,--wrap=x1fold_check_fd,--wrap=x1fold_read_notification,--wrap=ioctl $(GIO_LIBS) $(CRYPTO_LIBS) -o "$@"
 
-$(BUILD_DIR)/test-inspect: ../native/inspect.c ../native/test-reader.c $(BUILD_DIR)/libx1fold-native.a
+$(BUILD_DIR)/test-register $(BUILD_DIR)/test-inspect: $(BUILD_DIR)/test-%: ../native/%.c ../native/test-reader.c $(BUILD_DIR)/libx1fold-native.a
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(GIO_CFLAGS) $^ $(LDFLAGS) -Wl,--wrap=x1fold_sensor_public_key,--wrap=x1fold_session_status,--wrap=x1fold_check_fd,--wrap=geteuid $(GIO_LIBS) $(CRYPTO_LIBS) -o "$@"
