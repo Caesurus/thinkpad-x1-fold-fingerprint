@@ -48,13 +48,13 @@ mkdir -p -m 0700 "$state"
 test ! -e "$state/host-key.pem" && test ! -e "$state/pair-response.bin"
 openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:prime256v1 \
   -out "$state/host-key.pem"
-sudo systemctl stop fprintd.service
+sudo systemctl mask --runtime --now fprintd.service
 serial=$(sudo scripts/reader-fds.sh auto - ./build/native-inspect --serial)
 sudo scripts/reader-fds.sh auto "$state/host-key.pem" ./build/native-register \
   reset-register "$serial" fold-v153: "$state/pair-response.bin" --erase-enrollments
 ```
 
-If registration fails, run `sudo systemctl start fprintd.service` and preserve the key, result file and error output for diagnosis. An `ffff` result marks an incomplete attempt; it cannot be used as a credential. Repeating setup requires a new output path and a check of the reader's current state.
+The temporary service mask prevents D-Bus from starting fprintd while registration owns the reader. If registration fails, run `sudo systemctl unmask --runtime fprintd.service` and `sudo systemctl start fprintd.service`, then preserve the key, result file and error output for diagnosis. An `ffff` result marks an incomplete attempt; it cannot be used as a credential. Repeating setup requires a new output path and a check of the reader's current state.
 
 On success, read the firmware security flags with `sudo scripts/reader-fds.sh auto - ./build/native-inspect`; the tested Fold reported `a10b`. In an administrative shell from the repository root, set `state` to the same absolute directory created above, then install the encrypted credentials:
 
@@ -68,6 +68,7 @@ config=$(mktemp "$dir/.pairing-XXXXXXXX")
   4<"$state/host-key.pem" >"$config"
 mv -T -- "$config" "$dir/50-pairing.conf"
 systemctl daemon-reload
+systemctl unmask --runtime fprintd.service
 systemctl start fprintd.service
 ```
 

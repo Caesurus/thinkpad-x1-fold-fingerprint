@@ -498,7 +498,8 @@ def check_registration(register, inspect):
                 hid.close()
                 assert result.returncode == 1 and sensor.recv(128) == b"", label
                 if len(candidate) == 400:
-                    assert b"Registration not sent" in result.stderr, result.stderr
+                    assert b"Expected an issuer-approved host request" in result.stderr, result.stderr
+                    assert not output.exists()
                 else:
                     assert b"400-byte signed host request" in result.stderr and not output.exists()
 
@@ -573,6 +574,7 @@ def check_registration(register, inspect):
             try:
                 assert command(sensor) == b"\x01"
                 respond(sensor, firmware_reply())
+                registration_storage(sensor, present=True)
                 for partition in (1, 2):
                     assert command(sensor) == bytes([0x3f, partition])
                     respond(sensor, bytes(2))
@@ -603,6 +605,7 @@ def check_registration(register, inspect):
             try:
                 assert command(sensor) == b"\x01"
                 respond(sensor, firmware_reply())
+                registration_storage(sensor, present=True)
                 assert command(sensor) == bytes.fromhex("3f01")
                 respond(sensor, bytes.fromhex("4f04"))
                 out, err = proc.communicate(timeout=4)

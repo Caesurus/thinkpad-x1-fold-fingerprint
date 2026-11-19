@@ -31,6 +31,9 @@ esac
 [ -c "$node" ] || { echo "Fingerprint node is missing: $node" >&2; exit 1; }
 exec 3<> "$node"
 if [ "$key" != - ]; then
-    exec 4< "$key"
+    # Open the owner key only after dropping privileges. A root-open fd 4
+    # would otherwise let a narrowly allowed caller read any root-only file.
+    exec setpriv --reuid "$SUDO_UID" --regid "$SUDO_GID" --clear-groups \
+        sh -c 'exec 4< "$1"; shift; exec "$@"' reader-key "$key" "$@"
 fi
 exec setpriv --reuid "$SUDO_UID" --regid "$SUDO_GID" --clear-groups "$@"

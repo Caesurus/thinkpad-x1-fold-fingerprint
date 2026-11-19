@@ -11,6 +11,11 @@ typedef enum {
  * reader. No export of either private key is needed. */
 GBytes *x1fold_create_host_request (EVP_PKEY *host_public, EVP_PKEY *issuer_signer, GError **error);
 
+/* Validate a complete request and prove that the matching owner key can sign.
+ * Call before destructive storage operations; registration repeats the check. */
+gboolean x1fold_validate_host_request (GBytes *request, EVP_PKEY *host,
+                                       EVP_PKEY *issuer, GError **error);
+
 /* Erase SSFS and HOST in that order before a new pairing. The caller must
  * persist its new host key first; either format can leave the old pairing
  * unusable. No retry is performed after an uncertain exchange. */

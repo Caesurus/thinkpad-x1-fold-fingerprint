@@ -240,6 +240,10 @@ run (const guint8 *serial, const char *issuer_uri, const char *request_path, con
     request = x1fold_create_host_request (host, issuer, &error);
   if (!request)
     goto done;
+  /* Check the complete request and owner key before reserving output or
+   * erasing either partition. The library checks again before PAIR. */
+  if (!x1fold_validate_host_request (request, host, issuer, &error))
+    goto done;
   if (serial)
     {
       int flags = fcntl (3, F_GETFL);
