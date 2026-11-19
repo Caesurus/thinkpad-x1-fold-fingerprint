@@ -19,6 +19,12 @@ def save_key(path, key):
                                        serialization.NoEncryption()))
 
 
+def run_request(program, host_file, issuer_file, dest):
+    return subprocess.run(
+        ["sh", "-c", 'exec 4<"$1"; exec "$2" request "$3" "$4"',
+         "test-register", host_file, program, issuer_file.as_uri(), dest], capture_output=True)
+
+
 def check_service_config(program, folder, host_file, body, sensor_file):
     result = folder / "response"
 
@@ -75,13 +81,7 @@ def main(program, sensor_file=None):
         save_key(host_file, host)
         save_key(issuer_file, issuer)
 
-        def run(source, dest):
-            return subprocess.run(
-                ["sh", "-c", 'exec 4<"$1"; exec "$2" request "$3" "$4"',
-                 "test-register", host_file, program, source.as_uri(), dest],
-                capture_output=True, check=False)
-
-        result = run(issuer_file, output)
+        result = run_request(program, host_file, issuer_file, output)
         assert result.returncode == 0, result.stderr
         assert stat.S_IMODE(output.stat().st_mode) == 0o600
         request = output.read_bytes()
@@ -91,14 +91,14 @@ def main(program, sensor_file=None):
         size = int.from_bytes(request[142:144], "little")
         issuer.public_key().verify(request[144:144 + size], body, ec.ECDSA(hashes.SHA256()))
         assert request[144 + size:] == bytes(256 - size)
-        assert run(issuer_file, output).returncode != 0 and output.read_bytes() == request
+        assert run_request(program, host_file, issuer_file, output).returncode != 0 and output.read_bytes() == request
 
         public_file = folder / "issuer-public"
         public_file.write_bytes(issuer.public_key().public_bytes(
             serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo))
         second = folder / "second"
-        assert run(public_file, second).returncode != 0 and not second.exists()
-        assert run(folder / "missing", second).returncode != 0 and not second.exists()
+        assert run_request(program, host_file, public_file, second).returncode != 0 and not second.exists()
+        assert run_request(program, host_file, folder / "missing", second).returncode != 0 and not second.exists()
         check_service_config(program, folder, host_file, body, sensor_file)
     print("Native offline request and signature verified")
 

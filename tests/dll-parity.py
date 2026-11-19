@@ -98,7 +98,7 @@ def hid_guest(folder):
 
 
 def test_request(folder, build):
-    save_key = runpy.run_path(str(NATIVE / "test-register.py"))["save_key"]
+    registration = runpy.run_path(str(NATIVE / "test-register.py"))
     issuer = ec.generate_private_key(ec.SECP256R1())
     # The latter two points require a leading zero in a 32-byte Y or X coordinate.
     for scalar in (1, 43, 379):
@@ -114,11 +114,10 @@ def test_request(folder, build):
         dll_body = guest.read(guest.u64(ctx + 0x1b8), 142)
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            save_key(root / "host", host)
-            save_key(root / "issuer", issuer)
-            subprocess.run(["sh", "-c", 'exec 4<"$1"; exec "$2" request "$3" "$4"',
-                            "parity", root / "host", build / "native-register",
-                            (root / "issuer").as_uri(), root / "request"], check=True)
+            registration["save_key"](root / "host", host)
+            registration["save_key"](root / "issuer", issuer)
+            registration["run_request"](build / "native-register", root / "host", root / "issuer",
+                                        root / "request").check_returncode()
             request = (root / "request").read_bytes()
             assert len(request) == 400 and request[:142] == dll_body
             n = int.from_bytes(request[142:144], "little")
@@ -135,11 +134,17 @@ def test_storage(folder, build):
     pairing = record(2, b"synthetic opaque owner record")
     unknown = record(7, b"test")
     damaged = pairing[:-1] + bytes([pairing[-1] ^ 1])
-    for name, entries, expected in [
+    exact_fit = record(7, bytes(4096 - len(version + pairing) - 36))
+    corrupt_unknown = unknown[:-1] + bytes([unknown[-1] ^ 1])
+    cases = [
         ("erased", b"", "absent"), ("version only", version, "absent"),
         ("owner", version + pairing, "present"), ("other tags", unknown + pairing + version, "present"),
         ("bad checksum", version + damaged, "invalid"),
-    ]:
+        ("exact partition boundary", version + pairing + exact_fit, "present"),
+        ("corrupt trailing tag", version + pairing + corrupt_unknown, "invalid"),
+        ("empty unknown tag", record(7, b"") + version, "absent"),
+    ]
+    for name, entries, expected in cases:
         image = entries.ljust(4096, b"\xff")
         guest = hid_guest(folder)
         ctx = guest.alloc(bytes(512))
@@ -162,7 +167,7 @@ def test_storage(folder, build):
             observed = "absent" if found else "present"
         native = subprocess.check_output([build / "test-host-storage", "--image"], input=image)
         assert observed == expected == native.decode().strip(), (name, observed, native)
-    print("5 HOST images matched the HID DLL's validation and tag lookup", flush=True)
+    print(f"{len(cases)} HOST images matched the HID DLL's validation and tag lookup", flush=True)
 
 
 def dll_match(hid, reply, template):
@@ -201,16 +206,32 @@ def dll_match(hid, reply, template):
             blob(identity), blob(auxiliary))
 
 
+def adapter_verdict(folder, score):
+    adapter = Guest(folder, ADAPTER)
+    pipeline = adapter.alloc(bytes(96))
+    scratch = adapter.alloc(bytes(96))
+    adapter.put64(pipeline + 0x38, scratch)
+
+    def comparison(pipeline_ptr, subject, subfactor_ptr, match_ptr):
+        adapter.cpu.mem_write(match_ptr, bytes([bool(score)]))
+        return 0
+
+    # Supply the underlying comparison result to the real WinBio wrapper.
+    adapter.service(0x1150, comparison)
+    status = adapter.call(0x28d0, pipeline, scratch, 2, scratch + 8,
+                          scratch + 16, scratch + 24, scratch + 32, scratch + 40, scratch + 48)
+    assert adapter.mock_calls.get(adapter.base + 0x1150) == 1 and status in (0, 0x80098005)
+    return 4 if status == 0 else 5
+
+
 def test_verify(folder, build):
-    run_worker = runpy.run_path(str(NATIVE / "test-session.py"))["run_worker"]
-    for quality, score, extra in [(49, 100, b""), (50, 0, b""),
-                                  (50, 100, b""), (100, 100, b"aux")]:
-        template = b"T" * 16
-        subject = struct.pack("<I", 2) + bytes([0xb1]) + bytes(71)
-        identity = (struct.pack("<HI", 0, 16) + template + struct.pack("<HI", 1, 76) + subject
-                    + struct.pack("<HIB", 2, 1, 2))
-        reply = (bytes(2) + template + struct.pack("<IIII", 36, len(extra), len(identity), score)
-                 + bytes(32) + extra + identity)
+    peer = runpy.run_path(str(NATIVE / "test-session.py"))
+    template = peer["TEMPLATE_ID"]
+    identity = peer["enrollment_tags"](order=(0, 1, 2))
+    cases = [(49, 100, b""), (50, 0, b""), (50, 100, b""), (100, 100, b"aux"),
+             (1, 100, b""), (75, 0, b"aux"), (51, 1, b"x")]
+    for quality, score, extra in cases:
+        reply = peer["match_result"](template, identity, score, extra)
         hid = hid_guest(folder)
         ctx = hid.alloc(bytes(32))
         config = hid.alloc(bytes(256))
@@ -226,24 +247,25 @@ def test_verify(folder, build):
             assert observed == score
             if observed:
                 assert (record_id, payload, auxiliary) == (template, identity, extra)
-            adapter = Guest(folder, ADAPTER)
-            pipeline = adapter.alloc(bytes(96))
-            scratch = adapter.alloc(bytes(96))
-            adapter.put64(pipeline + 0x38, scratch)
-
-            def comparison(pipeline_ptr, subject, subfactor_ptr, match_ptr):
-                adapter.cpu.mem_write(match_ptr, bytes([bool(observed)]))
-                return 0
-
-            # Supply the underlying comparison result to the real WinBio wrapper.
-            adapter.service(0x1150, comparison)
-            status = adapter.call(0x28d0, pipeline, scratch, 2, scratch + 8,
-                                  scratch + 16, scratch + 24, scratch + 32, scratch + 40, scratch + 48)
-            assert adapter.mock_calls.get(adapter.base + 0x1150) == 1 and status in (0, 0x80098005)
-            event = 4 if status == 0 else 5
+            event = adapter_verdict(folder, observed)
             mode = "verify-match" if score else "verify-zero-score"
-        run_worker(build / "test-worker", mode, [(event, 0)], quality=quality, match_reply=reply)
-    print("4 quality and verification outcomes matched the DLLs and the native worker", flush=True)
+        peer["run_worker"](build / "test-worker", mode, [(event, 0)], quality=quality, match_reply=reply)
+    print(f"{len(cases)} quality and verification outcomes matched the DLLs and the native worker",
+          flush=True)
+
+    # The HID DLL returns these fields. Binding the match to the requested Linux
+    # enrollment is the worker's responsibility. A positive score alone is insufficient.
+    mismatches = [
+        ("wrong finger", template, peer["enrollment_tags"](finger=3)),
+        ("wrong account", template, peer["enrollment_tags"](user=b"A" * 16)),
+        ("other template", b"Y" * 16, peer["enrollment_tags"](template=b"Y" * 16)),
+    ]
+    for name, returned_id, other_identity in mismatches:
+        reply = peer["match_result"](returned_id, other_identity, 100, extra=identity)
+        observed = dll_match(hid_guest(folder), reply, template)
+        assert observed == (100, returned_id, other_identity, identity), name
+        peer["run_worker"](build / "test-worker", "verify-match", [(5, 0)], quality=50, match_reply=reply)
+    print(f"{len(mismatches)} identity mismatches rejected by the native worker", flush=True)
 
 
 if __name__ == "__main__":

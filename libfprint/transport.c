@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "transport.h"
+#include "wire.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -65,14 +66,6 @@ invalid_reply (GError **error)
 {
   g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_INVALID_DATA, "Invalid Tudor reply envelope");
   return FALSE;
-}
-
-static guint32
-read_le32 (const guint8 *bytes)
-{
-  guint32 value;
-  memcpy (&value, bytes, sizeof value);
-  return GUINT32_FROM_LE (value);
 }
 
 static ssize_t

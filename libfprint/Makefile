@@ -19,7 +19,7 @@ all: $(BUILD_DIR)/libx1fold-hid.so $(BUILD_DIR)/x1fold-probe
 $(BUILD_DIR):
 	mkdir -p "$@"
 
-$(BUILD_DIR)/libx1fold-hid.so: x1fold.c transport.c transport.h print-identity.c print-identity.h biometric-ipc.c biometric-ipc.h | $(BUILD_DIR)
+$(BUILD_DIR)/libx1fold-hid.so: x1fold.c transport.c transport.h print-identity.c print-identity.h biometric-ipc.c biometric-ipc.h wire.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -fPIC -shared -DG_LOG_DOMAIN='"x1fold_hid"' $(DRIVER_CFLAGS) x1fold.c transport.c print-identity.c biometric-ipc.c $(LDFLAGS) -Wl,-z,defs $(DRIVER_LIBS) -o "$@"
 
 $(BUILD_DIR)/x1fold-probe: probe.c | $(BUILD_DIR)
@@ -31,7 +31,7 @@ $(BUILD_DIR)/test-biometric-ipc: tests/biometric-ipc.c biometric-ipc.c biometric
 $(BUILD_DIR)/test-print-identity: tests/print-identity.c print-identity.c print-identity.h biometric-ipc.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(DRIVER_CFLAGS) tests/print-identity.c print-identity.c $(LDFLAGS) $(DRIVER_LIBS) -o "$@"
 
-$(BUILD_DIR)/test-transport: tests/transport.c transport.c transport.h | $(BUILD_DIR)
+$(BUILD_DIR)/test-transport: tests/transport.c transport.c transport.h wire.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(GIO_CFLAGS) tests/transport.c transport.c $(LDFLAGS) $(GIO_LIBS) -o "$@"
 
 $(BUILD_DIR)/test-worker-channel.preload: tests/worker-channel.c biometric-ipc.h | $(BUILD_DIR)
@@ -56,7 +56,7 @@ discover: all
 open: all
 	$(PRIVATE_DRIVER) G_MESSAGES_DEBUG=x1fold_hid $(BUILD_DIR)/x1fold-probe --open
 
-$(BUILD_DIR)/transport.o: transport.c transport.h | $(BUILD_DIR)
+$(BUILD_DIR)/transport.o: transport.c transport.h wire.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -fPIC $(GIO_CFLAGS) -c $< -o "$@"
 
 $(BUILD_DIR)/sensor-certificate.o: ../native/sensor-certificate.c ../native/sensor-certificate.h transport.h | $(BUILD_DIR)
@@ -77,13 +77,13 @@ $(BUILD_DIR)/test-handshake: ../native/test-handshake.c $(BUILD_DIR)/libx1fold-n
 $(BUILD_DIR)/credentials.o: ../native/credentials.c ../native/credentials.h ../native/session.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -fPIC $(GIO_CFLAGS) -c $< -o "$@"
 
-$(BUILD_DIR)/enroll.o: ../native/enroll.c ../native/enroll.h ../native/records.h ../native/verify.h ../native/session.h ../native/capture.h biometric-ipc.h | $(BUILD_DIR)
+$(BUILD_DIR)/enroll.o: ../native/enroll.c ../native/enroll.h ../native/records.h ../native/verify.h ../native/session.h ../native/capture.h biometric-ipc.h wire.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -fPIC $(GIO_CFLAGS) -c $< -o "$@"
 
-$(BUILD_DIR)/verify.o: ../native/verify.c ../native/verify.h ../native/records.h ../native/session.h ../native/capture.h biometric-ipc.h | $(BUILD_DIR)
+$(BUILD_DIR)/verify.o: ../native/verify.c ../native/verify.h ../native/records.h ../native/session.h ../native/capture.h biometric-ipc.h wire.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -fPIC $(GIO_CFLAGS) -c $< -o "$@"
 
-$(BUILD_DIR)/capture.o: ../native/capture.c ../native/capture.h ../native/session.h ../native/sensor-certificate.h transport.h | $(BUILD_DIR)
+$(BUILD_DIR)/capture.o: ../native/capture.c ../native/capture.h ../native/session.h ../native/sensor-certificate.h transport.h wire.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -fPIC $(GIO_CFLAGS) -c $< -o "$@"
 
 $(BUILD_DIR)/session.o: ../native/session.c ../native/session.h ../native/sensor-certificate.h ../native/host-proof.h ../native/handshake.h transport.h | $(BUILD_DIR)
@@ -101,7 +101,7 @@ $(BUILD_DIR)/test-pairing: ../native/test-pairing.c $(BUILD_DIR)/libx1fold-nativ
 $(BUILD_DIR)/libx1fold-native.a: $(BUILD_DIR)/host-storage.o $(BUILD_DIR)/pairing.o $(BUILD_DIR)/credentials.o $(BUILD_DIR)/enroll.o $(BUILD_DIR)/verify.o $(BUILD_DIR)/capture.o $(BUILD_DIR)/session.o $(BUILD_DIR)/transport.o $(BUILD_DIR)/sensor-certificate.o $(BUILD_DIR)/handshake.o $(BUILD_DIR)/host-proof.o
 	$(AR) rcs "$@" $^
 
-$(BUILD_DIR)/host-storage.o: ../native/host-storage.c ../native/host-storage.h transport.h | $(BUILD_DIR)
+$(BUILD_DIR)/host-storage.o: ../native/host-storage.c ../native/host-storage.h transport.h wire.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -fPIC $(GIO_CFLAGS) -c $< -o "$@"
 
 $(BUILD_DIR)/test-host-storage: ../native/test-host-storage.c $(BUILD_DIR)/host-storage.o

@@ -1,23 +1,10 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "enroll.h"
+#include "../libfprint/wire.h"
 #include "records.h"
 #include <string.h>
 
 enum { ENROLL = 0x96, MATCH = 0x99, START = 1, ADD = 2, COMMIT = 3, FINISH = 4 };
-
-static guint16
-u16 (const guint8 *p)
-{
-  return p[0] | ((guint16) p[1] << 8);
-}
-
-static guint32
-u32 (const guint8 *p)
-{
-  guint32 n;
-  memcpy (&n, p, sizeof n);
-  return GUINT32_FROM_LE (n);
-}
 
 static gboolean
 bad (GError **error, const char *reason)
@@ -33,10 +20,10 @@ enroll_command (X1FoldSession *s, const guint8 *cmd, gsize len, guint8 *reply, g
   gsize received;
   if (!x1fold_session_command (s, cmd, len, reply, expected, &received, deadline, cancel, error))
     return FALSE;
-  if (received >= 2 && u16 (reply))
+  if (received >= 2 && read_le16 (reply))
     {
       g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED, "Enrollment step %u returned 0x%04x",
-                   cmd[1], u16 (reply));
+                   cmd[1], read_le16 (reply));
       return FALSE;
     }
   return received == expected || bad (error, "Unexpected enrollment response length");
@@ -61,7 +48,7 @@ check_duplicate (X1FoldSession *s, GBytes *existing, gint64 deadline, GCancellab
   gsize received;
   if (!x1fold_session_command (s, cmd, 13 + len, reply, sizeof reply, &received, deadline, cancel, error))
     return FALSE;
-  if (received == 2 && u16 (reply) == 0x509)
+  if (received == 2 && read_le16 (reply) == 0x509)
     return TRUE;
   struct x1fold_match_result result;
   if (!x1fold_parse_match_result (reply, received, &result, error))
@@ -90,10 +77,10 @@ collect_samples (X1FoldSession *s, GBytes *existing, guint8 tuid[16], gint64 dea
           !enroll_command (s, add, sizeof add, reply, sizeof reply, deadline, cancel, error))
         return FALSE;
       const guint8 *stats = reply + 22;
-      guint progress = u16 (stats + 2);
-      gboolean rejected = u32 (stats + 28) != 0;
-      if (u32 (reply + 18) != 60 || progress > 100 || progress < previous ||
-          (rejected && progress != previous) || (progress == 100 && u32 (stats + 48)))
+      guint progress = read_le16 (stats + 2);
+      gboolean rejected = read_le32 (stats + 28) != 0;
+      if (read_le32 (reply + 18) != 60 || progress > 100 || progress < previous ||
+          (rejected && progress != previous) || (progress == 100 && read_le32 (stats + 48)))
         return bad (error, "Inconsistent enrollment sample statistics");
       gboolean retry = rejected || progress == previous;
       if (report && !report (progress, retry, data))
@@ -159,13 +146,13 @@ x1fold_enroll_print (X1FoldSession *s, const struct fold_bio_identity *print, gi
   gsize n;
   if (!x1fold_session_command (s, start, sizeof start, started, sizeof started, &n, deadline, cancel, error))
     return FALSE;
-  if (n >= 2 && u16 (started))
+  if (n >= 2 && read_le16 (started))
     {
-      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED, "Reader refused enrollment start: 0x%04x", u16 (started));
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED, "Reader refused enrollment start: 0x%04x", read_le16 (started));
       return FALSE;
     }
   /* A truncated success reply can leave a temporary enrollment active. */
-  gboolean ok = ((n == sizeof started && u32 (started + 2) == 0) || bad (error, "Unexpected enrollment start reply")) &&
+  gboolean ok = ((n == sizeof started && read_le32 (started + 2) == 0) || bad (error, "Unexpected enrollment start reply")) &&
                 collect_samples (s, before, tuid, deadline, cancel, report, data, error) &&
                 commit_print (s, before, print, tuid, deadline, cancel, error);
   if (!enroll_command (s, finish, sizeof finish, finished, sizeof finished,

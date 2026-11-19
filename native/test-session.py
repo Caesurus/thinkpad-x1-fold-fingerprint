@@ -32,11 +32,12 @@ def command(sock):
 
 
 def respond(sock, data):
-    # All replies in this profile fit the first Tudor envelope.
-    assert len(data) <= 245
-    message = b"synaptic" + struct.pack("<II", len(data) + 4, len(data)) + data
-    for pos in range(0, len(message), 63):
-        sock.sendall((b"\x0f" + message[pos:pos + 63]).ljust(64, b"\0"))
+    payload = struct.pack("<I", len(data)) + data
+    for start in range(0, len(payload), 249):
+        fragment = payload[start:start + 249]
+        message = b"synaptic" + struct.pack("<I", len(fragment)) + fragment
+        for pos in range(0, len(message), 63):
+            sock.sendall((b"\x0f" + message[pos:pos + 63]).ljust(64, b"\0"))
 
 
 def prf(secret, label, seed, size):
@@ -127,22 +128,33 @@ def capture(sock, keys, mode, seq=1, client=None):
     return seq
 
 
+TEMPLATE_ID = b"T" * 16
+ACCOUNT_GUID = bytes([0xb1]) + bytes(15)
+
+
+def enrollment_tags(template=TEMPLATE_ID, user=ACCOUNT_GUID, finger=2, subject_type=2, *, order=(1, 0, 2)):
+    subject = struct.pack("<I16s56x", subject_type, user)
+    fields = {0: template, 1: subject, 2: bytes([finger])}
+    return b"".join(struct.pack("<HI", tag, len(fields[tag])) + fields[tag] for tag in order)
+
+
+def match_result(template, identity, score, extra=b"", *, extra_len=None):
+    lengths = struct.pack("<IIII", 36, len(extra) if extra_len is None else extra_len,
+                          len(identity), score)
+    return bytes(2) + template + lengths + bytes(32) + extra + identity
+
+
 def print_operation(sock, keys, mode, client=None, quality=None, match_reply=None):
     seq = 1
-    tuid = b"T" * 16
+    tuid = TEMPLATE_ID
     child = b"P" * 16
-    guid = bytes([0xb1]) + bytes(15)
+    guid = ACCOUNT_GUID
 
     def exchange(expected, response):
         nonlocal seq
         assert open_record(command(sock), keys[:32], keys[64:68], seq, 23) == expected
         respond(sock, send_record(23, response, keys[32:64], keys[68:], seq))
         seq += 1
-
-    def tags(template=tuid, user=guid, finger=2, subject_type=2):
-        subject = struct.pack("<I", subject_type) + user + bytes(56)
-        fields = [(1, subject), (0, template), (2, bytes([finger]))]
-        return b"".join(struct.pack("<HI", tag, len(value)) + value for tag, value in fields)
 
     version = bytearray(38)
     version[18:24] = bytes([1, 2, 3, 4, 5, 6])
@@ -168,7 +180,7 @@ def print_operation(sock, keys, mode, client=None, quality=None, match_reply=Non
                 payload = child if template == tuid else b"R" * 16
                 exchange(object_cmd(0x9f, 3, template), listing([payload]))
                 target = template == tuid or mode == "enroll-existing-identity"
-                data = tags(template=template, finger=2 if target else 3)
+                data = enrollment_tags(template=template, finger=2 if target else 3)
                 exchange(object_cmd(0xa1, 3, payload), struct.pack("<II", 0, len(data)) + data)
 
         directory(before)
@@ -206,9 +218,7 @@ def print_operation(sock, keys, mode, client=None, quality=None, match_reply=Non
                     (pct == 100 and mode in ("enroll-collision", "enroll-final-error"))):
                 exchange(finish, bytes(2))
                 return seq
-        subject = struct.pack("<I16s56x", 2, guid)
-        metadata = (struct.pack("<HI16s", 0, 16, tuid) + struct.pack("<HI76s", 1, 76, subject)
-                    + struct.pack("<HIB", 2, 1, 2))
+        metadata = enrollment_tags(order=(0, 1, 2))
         denial = struct.pack("<H", 0x403)
         exchange(struct.pack("<BIII", 0x96, 3, 0, len(metadata)) + metadata,
                  denial if mode == "enroll-commit-denied" else bytes(2))
@@ -233,7 +243,7 @@ def print_operation(sock, keys, mode, client=None, quality=None, match_reply=Non
             payload = child if template == tuid else b"R" * 16
             children = [payload, b"Q" * 16] if template == tuid and mode == "delete-shared" else [payload]
             exchange(object_cmd(0x9f, 3, template), listing(children))
-            data = tags(template=template, finger=2 if template == tuid or mode == "delete-ambiguous" else 3)
+            data = enrollment_tags(template=template, finger=2 if template == tuid or mode == "delete-ambiguous" else 3)
             exchange(object_cmd(0xa1, 3, payload), struct.pack("<II", 0, len(data)) + data)
         if mode in ("delete-absent", "delete-shared", "delete-ambiguous"):
             return seq
@@ -248,7 +258,7 @@ def print_operation(sock, keys, mode, client=None, quality=None, match_reply=Non
     children = [child, b"Q" * 16] if mode == "verify-directory-ambiguous" else [child]
     exchange(object_cmd(0x9f, 3, tuid), listing(children))
     for obj in children:
-        data = tags(finger=3) if mode == "verify-directory-missing" else tags()
+        data = enrollment_tags(finger=3 if mode == "verify-directory-missing" else 2)
         exchange(object_cmd(0xa1, 3, obj), struct.pack("<II", 0, len(data)) + data)
     if mode.startswith("verify-directory-"):
         return seq
@@ -262,10 +272,14 @@ def print_operation(sock, keys, mode, client=None, quality=None, match_reply=Non
     exchange(struct.pack("<BI", 0x9d, 0x10000), struct.pack("<HIIII", 0, metric, 8, quality, 0))
     if low_quality or mode == "verify-malformed-metric":
         return seq
+    match_cmd = struct.pack("<BIII", 0x99, 1, 16, 0) + tuid
+    if match_reply is not None:
+        exchange(match_cmd, match_reply)
+        return seq
     header = b"Y" * 16 if mode == "verify-other-template" else tuid
-    data = tags(template=header, finger=3 if mode == "verify-other-finger" else 2,
-                user=b"A" * 16 if mode == "verify-other-account" else guid,
-                subject_type=3 if mode == "verify-other-subject-type" else 2)
+    data = enrollment_tags(template=header, finger=3 if mode == "verify-other-finger" else 2,
+                           user=b"A" * 16 if mode == "verify-other-account" else guid,
+                           subject_type=3 if mode == "verify-other-subject-type" else 2)
     if mode == "verify-malformed-dupe":
         data += struct.pack("<HIB", 2, 1, 2)
     if mode == "verify-malformed-truncated":
@@ -274,12 +288,11 @@ def print_operation(sock, keys, mode, client=None, quality=None, match_reply=Non
         header = b"Z" * 16
     score = 0 if mode == "verify-zero-score" else 100
     extra = b"aux" if mode in ("verify-match-extra", "verify-other-account") else b""
-    extra_len = 0xffffffff if mode == "verify-malformed-extra-length" else len(extra)
-    result = (bytes(2) + header + struct.pack("<IIII", 36, extra_len, len(data), score)
-              + bytes(32) + extra + data)
+    extra_len = 0xffffffff if mode == "verify-malformed-extra-length" else None
+    result = match_result(header, data, score, extra, extra_len=extra_len)
     if mode == "verify-rejected":
         result = struct.pack("<H", 0x509)
-    exchange(struct.pack("<BIII", 0x99, 1, 16, 0) + tuid, result if match_reply is None else match_reply)
+    exchange(match_cmd, result)
     return seq
 
 

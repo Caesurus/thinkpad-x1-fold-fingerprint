@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "records.h"
+#include "../libfprint/wire.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -10,20 +11,6 @@ enum { RECORD_LIMIT = 16384, GUID_SUBJECT = 2 };
 struct metadata {
   const guint8 *tuid, *subject, *finger;
 };
-
-static guint16
-le16 (const guint8 *p)
-{
-  return p[0] | ((guint16) p[1] << 8);
-}
-
-static guint32
-le32 (const guint8 *p)
-{
-  guint32 value;
-  memcpy (&value, p, sizeof value);
-  return GUINT32_FROM_LE (value);
-}
 
 static gboolean
 invalid (GError **error, const char *message)
@@ -52,8 +39,8 @@ decode_metadata (const guint8 *p, gsize len, struct metadata *out, GError **erro
   *out = (struct metadata){0};
   while (len >= 6)
     {
-      guint tag = le16 (p);
-      guint32 n = le32 (p + 2);
+      guint tag = read_le16 (p);
+      guint32 n = read_le32 (p + 2);
       p += 6;
       len -= 6;
       if (n > len)
@@ -90,7 +77,7 @@ malformed:
 static gboolean
 belongs_to (const struct metadata *meta, const struct fold_bio_identity *print)
 {
-  return le32 (meta->subject) == GUID_SUBJECT && !memcmp (meta->subject + 4, print->guid, 16) &&
+  return read_le32 (meta->subject) == GUID_SUBJECT && !memcmp (meta->subject + 4, print->guid, 16) &&
          *meta->finger == print->finger;
 }
 
@@ -99,10 +86,10 @@ ok_status (guint command, const guint8 *reply, gsize len, GError **error)
 {
   if (len < 2)
     return invalid (error, "Missing biometric command status");
-  if (le16 (reply) == 0)
+  if (read_le16 (reply) == 0)
     return TRUE;
   g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED, "Reader command 0x%02x returned 0x%04x",
-               command, le16 (reply));
+               command, read_le16 (reply));
   return FALSE;
 }
 
@@ -119,9 +106,9 @@ read_object (X1FoldSession *s, guint8 operation, guint8 kind, const guint8 id[16
   if (!x1fold_session_command (s, cmd, sizeof cmd, reply, sizeof reply, &length,
                                deadline, cancel, error) || !ok_status (operation, reply, length, error))
     return NULL;
-  if (operation == LIST && length >= 4 && length - 4 == 16u * le16 (reply + 2))
+  if (operation == LIST && length >= 4 && length - 4 == 16u * read_le16 (reply + 2))
     return g_bytes_new (reply + 4, length - 4);
-  if (operation == DATA && length >= 8 && length - 8 == le32 (reply + 4))
+  if (operation == DATA && length >= 8 && length - 8 == read_le32 (reply + 4))
     return g_bytes_new (reply + 8, length - 8);
   invalid (error, "Invalid enrollment object length");
   return NULL;
@@ -208,9 +195,9 @@ check_frame_quality (X1FoldSession *s, gint64 deadline, GCancellable *cancel,
   if (!x1fold_session_command (s, cmd, sizeof cmd, reply, sizeof reply, &size,
                                deadline, cancel, error) || !ok_status (METRICS, reply, size, error))
     return FALSE;
-  if (size != sizeof reply || le32 (reply + 2) != 0x10000 || le32 (reply + 6) != 8)
+  if (size != sizeof reply || read_le32 (reply + 2) != 0x10000 || read_le32 (reply + 6) != 8)
     return invalid (error, "Unsupported reader image quality report");
-  guint32 quality = le32 (reply + 10);
+  guint32 quality = read_le32 (reply + 10);
   if (quality > 100)
     return invalid (error, "Invalid reader image quality");
   *acceptable = quality >= 50;
@@ -221,16 +208,16 @@ gboolean
 x1fold_parse_match_result (const guint8 *reply, gsize size,
                            struct x1fold_match_result *result, GError **error)
 {
-  if (size < 66 || le16 (reply) != 0 || le32 (reply + 18) != 36)
+  if (size < 66 || read_le16 (reply) != 0 || read_le32 (reply + 18) != 36)
     return invalid (error, "Invalid reader match statistics");
 
-  guint32 extra_len = le32 (reply + 22), identity_len = le32 (reply + 26);
+  guint32 extra_len = read_le32 (reply + 22), identity_len = read_le32 (reply + 26);
   if (extra_len > size - 66 || identity_len != size - 66 - extra_len)
     return invalid (error, "Invalid reader match field lengths");
 
   *result = (struct x1fold_match_result) {
     .template_id = reply + 2, .identity = reply + 66 + extra_len,
-    .identity_len = identity_len, .score = le32 (reply + 30)
+    .identity_len = identity_len, .score = read_le32 (reply + 30)
   };
   return TRUE;
 }
@@ -246,7 +233,7 @@ match_frame (X1FoldSession *s, const struct fold_bio_identity *print, const guin
   if (!x1fold_session_command (s, cmd, sizeof cmd, reply, sizeof reply, &size,
                                deadline, cancel, error))
     return FALSE;
-  if (size == 2 && (le16 (reply) == 0x509 || le16 (reply) == 0x683))
+  if (size == 2 && (read_le16 (reply) == 0x509 || read_le16 (reply) == 0x683))
     return TRUE;
   if (!ok_status (MATCH, reply, size, error))
     return FALSE;
@@ -349,7 +336,7 @@ x1fold_delete_print (X1FoldSession *s, const struct fold_bio_identity *print, gi
   if (!x1fold_session_command (s, command, sizeof command, reply, sizeof reply, &len,
                                deadline, cancel, error) || !ok_status (DELETE_OBJECT, reply, len, error))
     return FALSE;
-  if (len != sizeof reply || le16 (reply + 2) == 0)
+  if (len != sizeof reply || read_le16 (reply + 2) == 0)
     return invalid (error, "Reader did not confirm template deletion");
   g_autoptr(GBytes) after = list_templates (s, deadline, cancel, error);
   if (!after)

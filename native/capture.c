@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "capture.h"
+#include "../libfprint/wire.h"
 #include <string.h>
 
 enum { FINGER_DOWN = 1u << 1, FRAME_READY = 1u << 24, PAGE_SIZE = 32 };
@@ -9,12 +10,6 @@ struct event_queue {
   guint16 seq;
   gboolean legacy;
 };
-
-static guint16
-le16 (const guint8 *p)
-{
-  return p[0] | ((guint16) p[1] << 8);
-}
 
 static gboolean
 bad_reply (guint8 command, GError **error)
@@ -29,10 +24,10 @@ check_status (guint8 command, const guint8 *reply, gsize size, GError **error)
 {
   if (size < 2)
     return bad_reply (command, error);
-  if (le16 (reply) == 0)
+  if (read_le16 (reply) == 0)
     return TRUE;
   g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED, "Capture command 0x%02x returned 0x%04x",
-               command, le16 (reply));
+               command, read_le16 (reply));
   return FALSE;
 }
 
@@ -52,7 +47,7 @@ configure_events (X1FoldSession *s, guint32 mask, struct event_queue *q, gint64 
     return FALSE;
   if (size != sizeof reply)
     return bad_reply (EVENT_CONFIG, error);
-  q->seq = le16 (reply + 64);
+  q->seq = read_le16 (reply + 64);
   return TRUE;
 }
 
@@ -73,7 +68,7 @@ acquire (X1FoldSession *s, X1FoldCapturePurpose purpose, gint64 deadline,
       if (!x1fold_session_command (s, request, sizeof request, reply, sizeof reply, &size,
                                    deadline, cancel, error))
         return FALSE;
-      if (size != 2 || le16 (reply) != 0x06ea || attempt == 3)
+      if (size != 2 || read_le16 (reply) != 0x06ea || attempt == 3)
         return check_status (FRAME_ACQUIRE, reply, size, error);
       gint64 remain = deadline - g_get_monotonic_time ();
       if (remain > 0)
@@ -94,7 +89,7 @@ wait_frame (X1FoldSession *s, struct event_queue *q, gint64 deadline,
       if (!x1fold_session_command (s, request, q->legacy ? 5 : sizeof request,
                                    reply, sizeof reply, &size, deadline, cancel, error))
         return FALSE;
-      if (!q->legacy && size == 2 && le16 (reply) >= 0x405 && le16 (reply) <= 0x407)
+      if (!q->legacy && size == 2 && read_le16 (reply) >= 0x405 && read_le16 (reply) <= 0x407)
         {
           q->legacy = TRUE;
           continue;
@@ -103,7 +98,7 @@ wait_frame (X1FoldSession *s, struct event_queue *q, gint64 deadline,
         return FALSE;
       if (size < 6)
         return bad_reply (EVENT_READ, error);
-      guint count = le16 (reply + 2), pending = le16 (reply + 4);
+      guint count = read_le16 (reply + 2), pending = read_le16 (reply + 4);
       if (count > PAGE_SIZE || size != 6 + 12 * count || (q->legacy && pending < count))
         return bad_reply (EVENT_READ, error);
       if (q->legacy)
