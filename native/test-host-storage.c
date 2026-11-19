@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 #include "host-storage.h"
 #include <string.h>
+#include <stdio.h>
 
 
 enum scenario { PRESENT, EMPTY, DAMAGED, OVERSIZED, REPEATED, BAD_VERSION, WRONG_PARTITION, SHORT };
 static enum scenario scenario;
 static guint reads;
+static guint8 *fixture_image;
 
 static guint
 entry (guint8 *p, guint8 tag, const guint8 *value, guint8 len)
@@ -42,6 +44,12 @@ __wrap_x1fold_exchange (int fd, const guint8 *cmd, gsize len, guint8 *reply, gsi
   memset (reply, 0, 8);
   reply[3] = 16;
   guint8 *body = reply + 8;
+  if (fixture_image)
+    {
+      memcpy (body, fixture_image, 4096);
+      *received = 4104;
+      return TRUE;
+    }
   memset (body, 0xff, 4096);
   guint8 version[] = {scenario == BAD_VERSION ? 2 : 1, 0, 0, 0};
   guint n = entry (body, 1, version, sizeof version);
@@ -56,8 +64,22 @@ __wrap_x1fold_exchange (int fd, const guint8 *cmd, gsize len, guint8 *reply, gsi
 }
 
 int
-main (void)
+main (int argc, char **argv)
 {
+  if (argc == 2 && !strcmp (argv[1], "--image"))
+    {
+      guint8 image[4096];
+      if (fread (image, 1, sizeof image, stdin) != sizeof image || getchar () != EOF)
+        return 2;
+      fixture_image = image;
+      gboolean present;
+      g_autoptr(GError) error = NULL;
+      gboolean ok = x1fold_check_host_storage (3, &present, &error);
+      puts (ok ? (present ? "present" : "absent") : "invalid");
+      return 0;
+    }
+  if (argc != 1)
+    return 2;
   for (scenario = PRESENT; scenario <= SHORT; scenario++)
     {
       gboolean present = TRUE;

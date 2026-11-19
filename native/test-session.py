@@ -127,7 +127,7 @@ def capture(sock, keys, mode, seq=1, client=None):
     return seq
 
 
-def print_operation(sock, keys, mode, client=None):
+def print_operation(sock, keys, mode, client=None, quality=None, match_reply=None):
     seq = 1
     tuid = b"T" * 16
     child = b"P" * 16
@@ -256,7 +256,8 @@ def print_operation(sock, keys, mode, client=None):
         return capture(sock, keys, "capture-cancel-wait", seq, client)
     seq = capture(sock, keys, "capture-verify", seq)
     low_quality = mode in ("verify-low-quality", "verify-low-quality-close-failed")
-    quality = 49 if low_quality else 50
+    if quality is None:
+        quality = 49 if low_quality else 50
     metric = 1 if mode == "verify-malformed-metric" else 0x10000
     exchange(struct.pack("<BI", 0x9d, 0x10000), struct.pack("<HIIII", 0, metric, 8, quality, 0))
     if low_quality or mode == "verify-malformed-metric":
@@ -278,11 +279,11 @@ def print_operation(sock, keys, mode, client=None):
               + bytes(32) + extra + data)
     if mode == "verify-rejected":
         result = struct.pack("<H", 0x509)
-    exchange(struct.pack("<BIII", 0x99, 1, 16, 0) + tuid, result)
+    exchange(struct.pack("<BIII", 0x99, 1, 16, 0) + tuid, result if match_reply is None else match_reply)
     return seq
 
 
-def reader(sock, mode, worker_keys=None, client=None):
+def reader(sock, mode, worker_keys=None, client=None, quality=None, match_reply=None):
     if worker_keys is not None:
         identity, host = worker_keys
         assert command(sock) == b"\x01"
@@ -337,7 +338,7 @@ def reader(sock, mode, worker_keys=None, client=None):
         return
     start = capture(sock, keys, mode) if mode.startswith("capture-") else 1
     if mode.startswith(("verify-", "delete-", "enroll-")):
-        start = print_operation(sock, keys, mode, client)
+        start = print_operation(sock, keys, mode, client, quality, match_reply)
     previous = None
     probes = 0 if worker_keys else 2
     for i in range(probes):
@@ -358,7 +359,7 @@ def reader(sock, mode, worker_keys=None, client=None):
     respond(sock, send_record(21, alert, keys[32:64], keys[68:], start + probes))
 
 
-def run_worker(exe, mode, expected_events):
+def run_worker(exe, mode, expected_events, *, quality=None, match_reply=None):
     sensor = ec.generate_private_key(ec.SECP256R1())
     identity = ec.generate_private_key(ec.SECP256R1())
     host = identity.public_key()
@@ -391,9 +392,11 @@ def run_worker(exe, mode, expected_events):
                 try:
                     client.sendall(frame)
                     if mode != "verify-missing-credential":
-                        reader(sensor_sock, mode, (sensor, host), client)
+                        reader(sensor_sock, mode, (sensor, host), client, quality, match_reply)
                     for event, stage in expected_events:
-                        assert client.recv(64) == frame[:6] + bytes([event, stage]) + frame[8:]
+                        reply = client.recv(64)
+                        assert reply == frame[:6] + bytes([event, stage]) + frame[8:], (
+                            mode, "expected event/stage", (event, stage), "received", tuple(reply[6:8]))
                     assert client.recv(64) == b""
                     assert proc.wait(timeout=4) == int(expected_events[-1][0] == 6)
                 finally:

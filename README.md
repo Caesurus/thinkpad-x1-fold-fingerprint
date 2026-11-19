@@ -17,6 +17,8 @@ stage=$(mktemp -d)
 DESTDIR="$stage" ./install.sh
 ```
 
+To compare the native code directly with the extracted vendor DLLs without a reader, run `make check-dll DLL_DIR='/path/to/extracted/package'`. [Test dependencies and coverage](docs/native-backend.md#offline-dll-differential-tests)
+
 The stage contains the TOD plugin, the native worker, the systemd socket and its service template. The static library is linked into the worker. These commands build and stage offline. A staged installation does not contact systemd or the keyboard.
 
 To activate the native backend on the target machine, run `sudo ./install.sh --native`. It replaces the installed libfprint module and service, reloads systemd, and retires the legacy worker and Python launchers. It leaves PAM, fingerprint enrollments and credential stores in place. A desktop with password unlock can run this backend before the pairing credentials are available. Fingerprint operations then return an error until a usable pairing is present.

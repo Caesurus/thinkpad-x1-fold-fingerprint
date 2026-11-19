@@ -45,6 +45,22 @@ The authentication port replaces the WinBio interface with libfprint and carries
 
 One match-reply difference was fixed in this review. In the HID DLL at RVA `0xa48f0`, a positive match can carry two variable-length fields after 36 bytes of statistics. The DLL consumes the first field before reading the second. The previous native parser required the first length to be zero. Verification and enrollment's duplicate check now validate both lengths. Verification reads identity metadata from the second field and still requires the expected template, account and finger. Tests include a nonempty first field, a mismatched account and an oversized field length. Whether this Fold emits a nonempty first field remains a hardware question.
 
+## Offline DLL differential tests
+
+Run from the repository root with the normal native build dependencies, Python `cryptography`, `pefile` and Unicorn 2.x. Supply the directory containing the two extracted Lenovo v153 DLLs. The test verifies each image's SHA-256 before executing its x86-64 instructions in Unicorn. Fixtures provide the Windows call frame, small guest heap, synthetic records and transport responses. The comparison invokes the built native registration tool, HOST reader and worker against the same inputs.
+
+```sh
+make check-dll DLL_DIR='/path/to/extracted/package'
+```
+
+| Compared behavior | What the test observes | Test boundary |
+| --- | --- | --- |
+| Prepare a host certificate | For three synthetic P-256 host keys, compare all 142 bytes assembled by the HID DLL with the signed body emitted by `native-register request`. Independently verify the native signature over the DLL bytes with an ephemeral issuer. | DLL execution stops exactly at the call to sign. This checks the bytes presented for signing. OEM issuer selection and certificate acceptance remain open. |
+| Validate and look up the HOST record | Feed the same 4 KiB image to the HID DLL's validator and tag lookup and to the native storage command. Compare present, absent and checksum-error results across five images. | The DLL calls a SHA-256 test service. Its record iteration, checksum comparison and tag lookup execute from the binary. Pairing data is opaque synthetic content. |
+| Apply the default quality threshold and report a match | Compare four worker outcomes with the HID DLL's threshold routine and, for accepted frames, run its match command against the identical binary sensor reply. Check the returned template, auxiliary bytes, identity and score. Pass the comparison flag to the adapter DLL's WinBio verification wrapper and compare its verdict with the worker's IPC event. | The configuration lookup returns an unset threshold. Sensor I/O and the adapter's underlying comparison callback are supplied by the test. The reader's physical finger comparison is outside this test. |
+
+As a regression check, the pre-fix native worker at `147a88f` returned a worker error on the valid reply carrying a nonempty auxiliary field. Both vendor DLL routines yielded a match, as did the native worker with the fix at `56de78d`. The optional test dependencies and proprietary images are used only by `make check-dll`.
+
 ## Pairing credentials and the hardware test
 
 In the Fold v153 HID DLL, `tudorSecurityDoPair` generates the host key pair and prepares the public host certificate before selecting basic or advanced pairing. A static trace from `_tudorSecurityPreparePairingParams` through two direct calls reaches a helper that calls `BCryptImportKeyPair`, `BCryptSignHash` and `BCryptDestroyKey` in that order. The import writes its output handle to a stack slot. The signing and destruction calls both read their key handle from that same slot. This identifies the signer as a key the driver supplies to Windows in memory. The trace establishes the handle's lifetime. The origin of the imported issuer credential on this Fold remains unverified. [Windows key import](https://learn.microsoft.com/en-us/windows/win32/api/bcrypt/nf-bcrypt-bcryptimportkeypair) · [Windows signing API](https://learn.microsoft.com/en-us/windows/win32/api/bcrypt/nf-bcrypt-bcryptsignhash)
