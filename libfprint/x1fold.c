@@ -4,6 +4,7 @@
 #include <glib-unix.h>
 #include <errno.h>
 #include <gudev/gudev.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 #include "transport.h"
@@ -18,6 +19,7 @@ typedef struct {
   int fd;
   struct fold_bio_session session;
   GSource *events, *deadline;
+  GIOErrorEnum stop_reason;
 } FpiDeviceX1Fold;
 
 typedef FpDeviceClass FpiDeviceX1FoldClass;
@@ -181,6 +183,7 @@ clear_transaction (FpiDeviceX1Fold *self)
       g_clear_pointer (&self->deadline, g_source_unref);
     }
   fold_bio_close (&self->session);
+  self->stop_reason = 0;
 }
 
 static void
@@ -191,10 +194,41 @@ transaction_failed (FpDevice *device, GError *error)
 }
 
 static gboolean
+finish_stop (gpointer data)
+{
+  FpiDeviceX1Fold *self = data;
+  GIOErrorEnum reason = self->stop_reason;
+  transaction_failed (data, g_error_new_literal (G_IO_ERROR, reason, reason == G_IO_ERROR_CANCELLED
+                                                  ? "Fingerprint operation cancelled" : "Fingerprint operation timed out"));
+  return G_SOURCE_REMOVE;
+}
+
+static void
+stop_transaction (FpDevice *device, GIOErrorEnum reason)
+{
+  FpiDeviceX1Fold *self = (FpiDeviceX1Fold *) device;
+  if (!self->events || self->stop_reason)
+    return;
+  self->stop_reason = reason;
+  /* EOF asks the worker to cancel. Keep the read half until the worker has
+   * released its reader fd so a new scan cannot overlap normal cleanup. */
+  if (shutdown (self->session.socket, SHUT_WR) < 0)
+    {
+      finish_stop (device);
+      return;
+    }
+  GMainContext *context = g_source_get_context (self->events);
+  g_source_destroy (self->deadline);
+  g_source_unref (self->deadline);
+  self->deadline = g_timeout_source_new (10000);
+  g_source_set_callback (self->deadline, finish_stop, device, NULL);
+  g_source_attach (self->deadline, context);
+}
+
+static gboolean
 transaction_timeout (gpointer data)
 {
-  transaction_failed (data, g_error_new_literal (G_IO_ERROR, G_IO_ERROR_TIMED_OUT,
-                                                  "Fingerprint operation timed out"));
+  stop_transaction (data, G_IO_ERROR_TIMED_OUT);
   return G_SOURCE_REMOVE;
 }
 
@@ -204,6 +238,17 @@ transaction_event (gint fd, GIOCondition condition, gpointer data)
   FpDevice *device = FP_DEVICE (data);
   FpiDeviceX1Fold *self = (FpiDeviceX1Fold *) device;
   struct fold_bio_session *session = &self->session;
+  if (self->stop_reason)
+    {
+      if (condition & (G_IO_HUP | G_IO_ERR))
+        return finish_stop (device);
+      /* Discard progress or a result already queued when cancellation won. */
+      guint8 ignored;
+      ssize_t n = recv (fd, &ignored, 1, MSG_DONTWAIT);
+      if (n > 0 || (n < 0 && (errno == EINTR || errno == EAGAIN)))
+        return G_SOURCE_CONTINUE;
+      return finish_stop (device);
+    }
   enum fold_bio_event event;
   if (fold_bio_next (session, -1, &event) < 0)
     {
@@ -219,7 +264,9 @@ transaction_event (gint fd, GIOCondition condition, gpointer data)
     }
 
   clear_transaction (self);
-  if (event == FOLD_ENROLLED)
+  if (event == FOLD_DUPLICATE)
+    fpi_device_enroll_complete (device, NULL, fpi_device_error_new (FP_DEVICE_ERROR_DATA_DUPLICATE));
+  else if (event == FOLD_ENROLLED)
     {
       FpPrint *print;
       GError *error = NULL;
@@ -298,10 +345,7 @@ static void delete_print (FpDevice *device) { start_transaction (device, FOLD_DE
 static void
 cancel_transaction (FpDevice *device)
 {
-  FpiDeviceX1Fold *self = (FpiDeviceX1Fold *) device;
-  if (self->events)
-    transaction_failed (device, g_error_new_literal (G_IO_ERROR, G_IO_ERROR_CANCELLED,
-                                                       "Fingerprint operation cancelled"));
+  stop_transaction (device, G_IO_ERROR_CANCELLED);
 }
 
 static void

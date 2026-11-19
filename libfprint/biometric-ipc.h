@@ -6,7 +6,7 @@ enum fold_bio_operation { FOLD_ENROLL = 1, FOLD_VERIFY = 2, FOLD_DELETE = 3 };
 enum fold_bio_event {
     FOLD_BEGIN = 0, FOLD_PROGRESS = 1, FOLD_RETRY = 2, FOLD_ENROLLED = 3,
     FOLD_MATCH = 4, FOLD_NO_MATCH = 5, FOLD_ERROR = 6, FOLD_CANCELLED = 7,
-    FOLD_DELETED = 8
+    FOLD_DELETED = 8, FOLD_DUPLICATE = 9
 };
 
 /* Wire values use octets only. guid is the exact 16-byte WinBio GUID
@@ -40,6 +40,6 @@ void fold_bio_close(struct fold_bio_session *session);
 /* Broker side. Called with an accepted, connected Unix seqpacket socket.
  * Only requests from UID 0 are accepted. On success the caller owns both
  * descriptors; independently verify sensor identity against the opened fd
- * before any vendor I/O. Terminal replies require real WinBio results. */
+ * before sensor I/O. A match reply requires an authenticated reader result. */
 int fold_bio_accept(int rendezvous, struct fold_bio_frame *request,
                     int *private_socket, int *hidraw);
