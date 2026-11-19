@@ -2,6 +2,7 @@
 /* Caller holds the exclusive reader claim. systemd supplies fd 3.
  * In --paired mode fds 4, 5 and 6 supply the owner's existing pairing. */
 #include "capture.h"
+#include "host-storage.h"
 #include <errno.h>
 #include <fcntl.h>
 #include "credentials.h"
@@ -63,9 +64,10 @@ main (int argc, char **argv)
 {
   gboolean capture = argc == 3 && !strcmp (argv[2], "--capture");
   gboolean paired = (argc == 2 || capture) && !strcmp (argv[1], "--paired");
-  if (argc != 1 && !paired)
+  gboolean storage = argc == 2 && !strcmp (argv[1], "--host-storage");
+  if (argc != 1 && !paired && !storage)
     {
-      fputs ("Usage: native-inspect [--paired [--capture]]\n", stderr);
+      fputs ("Usage: native-inspect [--host-storage | --paired [--capture]]\n", stderr);
       return 1;
     }
   const int fd = 3;
@@ -94,6 +96,19 @@ main (int argc, char **argv)
   if (!x1fold_read_version (fd, &info, FALSE, NULL, &error) ||
       (paired && !inspect_pairing (fd, &info, capture, &error)))
     goto failure;
+  if (storage)
+    {
+      if (info.product != 0x41 || info.major != 10 || info.minor != 1)
+        {
+          fputs ("Unsupported Fold storage profile\n", stderr);
+          return 1;
+        }
+      gboolean has_pairing;
+      if (!x1fold_check_host_storage (fd, &has_pairing, &error))
+        goto failure;
+      puts (has_pairing ? "HOST contains a checksum-verified pairing record." :
+                          "HOST contains no pairing record.");
+    }
   if (capture)
     puts ("Reader reported finger down and frame ready. Capture finished and session closed.");
   printf ("%sfirmware %u.%u build %u, product 0x%02x, interface 0x%02x, "

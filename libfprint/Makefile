@@ -37,9 +37,10 @@ $(BUILD_DIR)/test-transport: tests/transport.c transport.c transport.h | $(BUILD
 $(BUILD_DIR)/test-worker-channel.preload: tests/worker-channel.c biometric-ipc.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -fPIC -shared $< $(LDFLAGS) -o "$@"
 
-check: all $(BUILD_DIR)/test-worker-channel.preload $(BUILD_DIR)/native-register $(BUILD_DIR)/native-worker $(BUILD_DIR)/test-worker $(BUILD_DIR)/test-session $(BUILD_DIR)/test-host-proof $(BUILD_DIR)/test-handshake $(BUILD_DIR)/test-certificate $(BUILD_DIR)/test-pairing $(BUILD_DIR)/test-transport $(BUILD_DIR)/test-biometric-ipc $(BUILD_DIR)/test-print-identity
+check: all $(BUILD_DIR)/test-host-storage $(BUILD_DIR)/native-inspect $(BUILD_DIR)/test-worker-channel.preload $(BUILD_DIR)/native-register $(BUILD_DIR)/native-worker $(BUILD_DIR)/test-worker $(BUILD_DIR)/test-session $(BUILD_DIR)/test-host-proof $(BUILD_DIR)/test-handshake $(BUILD_DIR)/test-certificate $(BUILD_DIR)/test-pairing $(BUILD_DIR)/test-transport $(BUILD_DIR)/test-biometric-ipc $(BUILD_DIR)/test-print-identity
 	$(PYTHON) -B ../native/test-register.py "$(BUILD_DIR)/native-register"
 	$(PYTHON) -B ../native/test-session.py "$(BUILD_DIR)/test-session" "$(BUILD_DIR)/test-worker"
+	$(BUILD_DIR)/test-host-storage
 	$(BUILD_DIR)/test-host-proof
 	$(BUILD_DIR)/test-handshake
 	$(BUILD_DIR)/test-certificate
@@ -97,8 +98,14 @@ $(BUILD_DIR)/pairing.o: ../native/pairing.c ../native/pairing.h ../native/host-p
 $(BUILD_DIR)/test-pairing: ../native/test-pairing.c $(BUILD_DIR)/libx1fold-native.a
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(GIO_CFLAGS) $^ $(LDFLAGS) -Wl,--wrap=x1fold_check_fd,--wrap=x1fold_session_status,--wrap=x1fold_exchange $(GIO_LIBS) $(CRYPTO_LIBS) -o "$@"
 
-$(BUILD_DIR)/libx1fold-native.a: $(BUILD_DIR)/pairing.o $(BUILD_DIR)/credentials.o $(BUILD_DIR)/enroll.o $(BUILD_DIR)/verify.o $(BUILD_DIR)/capture.o $(BUILD_DIR)/session.o $(BUILD_DIR)/transport.o $(BUILD_DIR)/sensor-certificate.o $(BUILD_DIR)/handshake.o $(BUILD_DIR)/host-proof.o
+$(BUILD_DIR)/libx1fold-native.a: $(BUILD_DIR)/host-storage.o $(BUILD_DIR)/pairing.o $(BUILD_DIR)/credentials.o $(BUILD_DIR)/enroll.o $(BUILD_DIR)/verify.o $(BUILD_DIR)/capture.o $(BUILD_DIR)/session.o $(BUILD_DIR)/transport.o $(BUILD_DIR)/sensor-certificate.o $(BUILD_DIR)/handshake.o $(BUILD_DIR)/host-proof.o
 	$(AR) rcs "$@" $^
+
+$(BUILD_DIR)/host-storage.o: ../native/host-storage.c ../native/host-storage.h transport.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) -fPIC $(GIO_CFLAGS) -c $< -o "$@"
+
+$(BUILD_DIR)/test-host-storage: ../native/test-host-storage.c $(BUILD_DIR)/host-storage.o
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(GIO_CFLAGS) $^ $(LDFLAGS) -Wl,--wrap=x1fold_exchange $(GIO_LIBS) -o "$@"
 
 $(BUILD_DIR)/native-inspect: ../native/inspect.c $(BUILD_DIR)/libx1fold-native.a
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(WARNINGS) $(GIO_CFLAGS) $^ $(LDFLAGS) $(GIO_LIBS) $(CRYPTO_LIBS) -o "$@"
