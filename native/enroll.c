@@ -48,7 +48,7 @@ check_duplicate (X1FoldSession *s, GBytes *existing, gint64 deadline, GCancellab
   gsize received;
   if (!x1fold_session_command (s, cmd, 13 + len, reply, sizeof reply, &received, deadline, cancel, error))
     return FALSE;
-  if (received == 2 && read_le16 (reply) == 0x509)
+  if (received == 2 && (read_le16 (reply) == 0x509 || read_le16 (reply) == 0x683))
     return TRUE;
   struct x1fold_match_result result;
   if (!x1fold_parse_match_result (reply, received, &result, error))
@@ -64,7 +64,7 @@ check_duplicate (X1FoldSession *s, GBytes *existing, gint64 deadline, GCancellab
 }
 
 static gboolean
-collect_samples (X1FoldSession *s, GBytes *existing, guint8 tuid[16], gint64 deadline,
+collect_samples (X1FoldSession *s, guint8 tuid[16], gint64 deadline,
                  GCancellable *cancel, X1FoldSampleReport report, gpointer data, GError **error)
 {
   const guint8 add[] = {ENROLL, ADD, 0, 0, 0};
@@ -73,7 +73,6 @@ collect_samples (X1FoldSession *s, GBytes *existing, guint8 tuid[16], gint64 dea
     {
       guint8 reply[82];
       if (!x1fold_capture_frame (s, X1FOLD_CAPTURE_ENROLL, deadline, cancel, NULL, NULL, error) ||
-          !check_duplicate (s, existing, deadline, cancel, error) ||
           !enroll_command (s, add, sizeof add, reply, sizeof reply, deadline, cancel, error))
         return FALSE;
       const guint8 *stats = reply + 22;
@@ -141,6 +140,10 @@ x1fold_enroll_print (X1FoldSession *s, const struct fold_bio_identity *print, gi
       g_set_error_literal (error, G_IO_ERROR, G_IO_ERROR_EXISTS, "Enrollment identity already exists");
       return FALSE;
     }
+  if (g_bytes_get_size (before) &&
+      (!x1fold_capture_frame (s, X1FOLD_CAPTURE_ENROLL, deadline, cancel, NULL, NULL, error) ||
+       !check_duplicate (s, before, deadline, cancel, error)))
+    return FALSE;
   const guint8 start[13] = {ENROLL, START}, finish[5] = {ENROLL, FINISH};
   guint8 started[6], finished[2];
   gsize n;
@@ -153,7 +156,7 @@ x1fold_enroll_print (X1FoldSession *s, const struct fold_bio_identity *print, gi
     }
   /* A truncated success reply can leave a temporary enrollment active. */
   gboolean ok = ((n == sizeof started && read_le32 (started + 2) == 0) || bad (error, "Unexpected enrollment start reply")) &&
-                collect_samples (s, before, tuid, deadline, cancel, report, data, error) &&
+                collect_samples (s, tuid, deadline, cancel, report, data, error) &&
                 commit_print (s, before, print, tuid, deadline, cancel, error);
   if (!enroll_command (s, finish, sizeof finish, finished, sizeof finished,
                        g_get_monotonic_time () + 3 * G_TIME_SPAN_SECOND, NULL, ok ? error : NULL) || !ok)

@@ -150,7 +150,8 @@ test_enroll (X1FoldSession *session, const char *mode, gint64 deadline)
   struct progress p = {.mode = mode};
   g_autoptr(GError) error = NULL;
   gboolean ok = x1fold_enroll_print (session, &print, deadline, NULL, sample_report, &p, &error);
-  if (g_str_equal (mode, "enroll-multiple") || g_str_equal (mode, "enroll-empty"))
+  if (g_str_equal (mode, "enroll-multiple") || g_str_equal (mode, "enroll-empty") ||
+      g_str_equal (mode, "enroll-no-candidate"))
     {
       g_assert_no_error (error);
       g_assert_true (ok);

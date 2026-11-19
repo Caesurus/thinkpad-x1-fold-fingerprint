@@ -186,9 +186,19 @@ def print_operation(sock, keys, mode, client=None, quality=None, match_reply=Non
         directory(before)
         if mode == "enroll-existing-identity":
             return seq
+        finish = struct.pack("<BI", 0x96, 4)
+        if before:
+            # The DLL checks a captured image once before enrollment begins.
+            # A match consumes that image; ADD must use a new capture.
+            seq = capture(sock, keys, "capture-enroll", seq)
+            result = struct.pack("<H", 0x683 if mode == "enroll-no-candidate" else 0x509)
+            if mode == "enroll-duplicate":
+                result = bytes(2) + old + struct.pack("<IIII", 36, 3, 0, 100) + bytes(32) + b"aux"
+            exchange(struct.pack("<BIII", 0x99, 1, len(before) * 16, 0) + b"".join(before), result)
+            if mode == "enroll-duplicate":
+                return seq
         start_reply = {"enroll-short-start": bytes(2), "enroll-start-denied": struct.pack("<H", 0x403)}
         exchange(struct.pack("<BIII", 0x96, 1, 0, 0), start_reply.get(mode, bytes(6)))
-        finish = struct.pack("<BI", 0x96, 4)
         if mode == "enroll-short-start":
             exchange(finish, bytes(2))
             return seq
@@ -196,16 +206,6 @@ def print_operation(sock, keys, mode, client=None, quality=None, match_reply=Non
             return seq
         for pct, reject in [(35, 0), (35, 1), (100, 0)]:
             seq = capture(sock, keys, "capture-enroll", seq)
-            if before:
-                result = struct.pack("<H", 0x509)
-                if mode == "enroll-duplicate":
-                    result = bytes(2) + old + struct.pack("<IIII", 36, 3, 0, 100) + bytes(32) + b"aux"
-                if mode == "enroll-missing-candidate":
-                    result = struct.pack("<H", 0x683)
-                exchange(struct.pack("<BIII", 0x99, 1, len(before) * 16, 0) + b"".join(before), result)
-                if mode in ("enroll-duplicate", "enroll-missing-candidate"):
-                    exchange(finish, bytes(2))
-                    return seq
             stats = bytearray(60)
             struct.pack_into("<H", stats, 2, 101 if mode == "enroll-invalid-progress" else pct)
             struct.pack_into("<I", stats, 28, reject)
@@ -619,7 +619,7 @@ if __name__ == "__main__":
                  "delete-ambiguous", "delete-duplicate-id", "delete-wrong-serial", "delete-zero-count",
                  "delete-still-present", "delete-wrong-survivor", "delete-last",
                  "enroll-multiple", "enroll-empty", "enroll-existing-identity", "enroll-duplicate",
-                 "enroll-missing-candidate", "enroll-invalid-progress", "enroll-final-error",
+                 "enroll-no-candidate", "enroll-invalid-progress", "enroll-final-error",
                  "enroll-collision", "enroll-client-cancel", "enroll-commit-denied",
                  "enroll-finish-denied", "enroll-missing-readback", "enroll-lost-other",
                  "enroll-short-start", "enroll-start-denied")
@@ -632,7 +632,8 @@ if __name__ == "__main__":
                    "verify-other-finger": [(5, 0)], "verify-malformed-metric": [(6, 0)],
                    "verify-missing-credential": [(6, 0)], "verify-close-failed": [(6, 0)],
                    "verify-client-cancel": [(7, 0)], "enroll-duplicate": [(9, 0)],
-                   "enroll-multiple": [(1, 1), (2, 0), (1, 2), (3, 0)], "delete-one": [(8, 0)]}
+                   "enroll-multiple": [(1, 1), (2, 0), (1, 2), (3, 0)],
+                   "enroll-no-candidate": [(1, 1), (2, 0), (1, 2), (3, 0)], "delete-one": [(8, 0)]}
         for mode, events in workers.items():
             run_worker(sys.argv[2], mode, events)
         print(f"{len(workers)} native worker transactions passed")

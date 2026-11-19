@@ -4,7 +4,7 @@ This driver lets KDE and `fprintd` enroll and verify fingers on the USB-connecte
 
 The tested system ran **Ubuntu 26.04.1 on x86-64**, Ubuntu's libfprint 1.95.1 TOD interface, and fprintd 1.94.5. With the legacy Lenovo-backed worker, a right-index enrollment unlocked the KDE desktop twice. Password fallback also worked. Successive scans opened fresh workers using the same sensor pairing while the keyboard stayed connected.
 
-The default build on `native-backend` produces a native Linux worker and libfprint plugin. The worker implements enrollment, verification and individual print deletion. These operations have passed software-reader tests and await physical validation. [Architecture diagrams and verification status](docs/native-backend.md)
+The default build on `native-backend` produces a native Linux worker and libfprint plugin. On the physical Fold, this worker enrolled the right index, matched it, rejected a right-middle touch, recovered from cancellation without a keyboard reset, enrolled and deleted a temporary right-middle print, and matched the right index afterward. The owner confirmed a right-index KDE unlock. [Architecture diagrams and verification status](docs/native-backend.md)
 
 ## Native build and staged installation
 
@@ -33,7 +33,7 @@ For fingerprint operations systemd loads these three credentials from the system
 
 For a completed native registration, `native-register service-config` converts the saved response and matching owner key into a single encrypted systemd drop-in for these three credentials. [Installing a completed native pairing](docs/native-backend.md#installing-a-completed-native-pairing)
 
-The optional `make native-register` tool constructs and signs the host request locally through OpenSSL. It can also send a registration to an explicitly selected reader. On November 19, 2026, this Fold accepted a native request signed through the locally reconstructed Fold issuer path. The saved certificates and host key opened authenticated native sessions before and after a physical USB reconnect. The issuer profile is kept outside this repository, so this result does not yet provide a distributable setup procedure for other readers. The installed native service now has encrypted credentials; physical native enrollment, verification and KDE unlock remain to be tested. [Pairing implementation and evidence](docs/native-backend.md#pairing-credentials-and-the-hardware-test)
+The optional `make native-register` tool constructs and signs the host request locally through OpenSSL. It can also send a registration to an explicitly selected reader. On November 19, 2026, this Fold accepted a native request signed through the locally reconstructed Fold issuer path. The saved certificates and host key opened authenticated native sessions before and after a physical USB reconnect. The issuer profile is kept outside this repository, so this result does not yet provide a distributable setup procedure for other readers. The installed native service uses encrypted credentials, and right-index enrollment and KDE unlock have now passed on this Fold. [Pairing implementation and evidence](docs/native-backend.md#pairing-credentials-and-the-hardware-test)
 
 ## Legacy Lenovo-backed build
 
