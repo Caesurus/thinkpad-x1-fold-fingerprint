@@ -2,6 +2,7 @@
 """Differential tests against selected machine-code routines in the exact v153 PE images."""
 import argparse
 import hashlib
+import hmac
 import runpy
 import struct
 import subprocess
@@ -9,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 import pefile
-from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, utils
 from unicorn import Uc, UC_ARCH_X86, UC_HOOK_CODE, UC_MODE_64
 from unicorn.x86_const import (UC_X86_REG_RAX, UC_X86_REG_RCX, UC_X86_REG_RDX,
@@ -137,6 +138,57 @@ def test_issuer_source(folder, build):
         assert guest.mock_calls[guest.base + 0x6e4a0] == 1
         assert guest.mock_calls[guest.base + 0x73fa0] == 1
     print("2 synthetic issuer contexts followed the DLL's derivation input layout", flush=True)
+
+
+def test_issuer_derivation(folder, build):
+    for context in (bytes(range(32)), bytes(reversed(range(32))), bytes(32), bytes([255]) * 32):
+        guest = hid_guest(folder)
+        guest.put64(guest.base + 0x157a88, 0)
+        guest.service(0x61c70, lambda *_: 0)
+        guest.service(0x61c90, lambda dest, value, size, *_:
+                      guest.cpu.mem_write(dest, bytes([value & 255]) * size))
+        guest.service(0x61cd0, lambda dest, src, size, *_:
+                      guest.cpu.mem_write(dest, guest.read(src, size)))
+        guest.service(0x3a5b0, lambda *_: None)
+        guest.service(0x639d0, lambda addr, *_: guest.read(addr, 80).index(0))
+
+        def supply_context(descriptor, *_):
+            guest.cpu.mem_write(guest.u64(descriptor + 8), context)
+            return 0
+
+        def hmac_sha256(data, length, secret, secret_length):
+            frame = guest.cpu.reg_read(UC_X86_REG_RSP)
+            assert guest.u64(frame + 48) == 32
+            assert guest.u64(frame + 56) == 0
+            digest = hmac.new(guest.read(secret, secret_length), guest.read(data, length), hashlib.sha256).digest()
+            guest.cpu.mem_write(guest.u64(frame + 40), digest)
+            return 0
+
+        guest.service(0x6e4a0, supply_context)
+        guest.service(0x74880, hmac_sha256)
+        output = guest.alloc(bytes(32))
+        descriptor = guest.alloc(struct.pack("<IIQ", 32, 0, output))
+        assert guest.call(0x6e6c0, descriptor) == 0
+        derived = guest.read(output, 32)
+        assert guest.mock_calls[guest.base + 0x74880] == 2
+        # Execute the driver's scalar import preparation too. The actual
+        # property-store insertion receives big-endian coordinates and scalar.
+        guest.service(0xbb260, lambda *_: guest.alloc(struct.pack("<III", 0, 256, 32)))
+        captured = []
+        def capture_import(kind, owner, size, data):
+            assert kind == 0x139 and size == 96
+            captured.append(guest.read(data, size))
+            return 0
+        guest.service(0xbbb90, capture_import)
+        crypto_context = guest.alloc(struct.pack("<QQ", 0, guest.alloc(bytes(8))))
+        imported = guest.alloc(bytes(8))
+        assert guest.call(0xba520, crypto_context, 32, output, imported) == 0
+        assert captured == [bytes(64) + derived[::-1]]
+        point = ec.derive_private_key(int.from_bytes(derived, "little"), ec.SECP256R1()).public_key()
+        expected = point.public_bytes(serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+        result = subprocess.run([build / "test-issuer"], input=context, capture_output=True, check=True)
+        assert result.stdout == expected
+    print("4 native issuer public keys matched the DLL's derivation with synthetic contexts", flush=True)
 
 
 def test_pair_status(folder, build):
@@ -390,5 +442,5 @@ if __name__ == "__main__":
     parser.add_argument("dll_directory", type=Path)
     parser.add_argument("build_directory", type=Path)
     args = parser.parse_args()
-    for test in (test_issuer_source, test_request, test_pair_status, test_storage, test_verify):
+    for test in (test_issuer_source, test_issuer_derivation, test_request, test_pair_status, test_storage, test_verify):
         test(args.dll_directory, args.build_directory.resolve())

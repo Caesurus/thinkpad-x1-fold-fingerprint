@@ -2,6 +2,7 @@
 """Check the administrative CLI offline with two ephemeral test keys."""
 import os
 import hashlib
+import hmac
 from pathlib import Path
 import stat
 import subprocess
@@ -72,6 +73,18 @@ def check_service_config(program, folder, host_file, body, sensor_file):
 
 
 def main(program, sensor_file=None):
+    issuer_test = Path(program).parent / "test-issuer"
+    for context in (bytes(range(32)), bytes(reversed(range(32))), bytes(32), bytes([255]) * 32):
+        seed = b"HS_KEY_PAIR_GEN" + context[16:] + bytes.fromhex("aaaa")
+        a = hmac.digest(context[:16], seed, "sha256")
+        scalar = int.from_bytes(hmac.digest(context[:16], a + seed, "sha256"), "little")
+        expected = ec.derive_private_key(scalar, ec.SECP256R1()).public_key().public_bytes(
+            serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+        result = subprocess.run([issuer_test], input=context, capture_output=True, check=True)
+        assert result.stdout == expected
+    for wrong in (b"", bytes(31), bytes(33)):
+        result = subprocess.run([issuer_test], input=wrong, capture_output=True)
+        assert result.returncode == 2 and not result.stdout
     host = ec.generate_private_key(ec.SECP256R1())
     issuer = ec.generate_private_key(ec.SECP256R1())
     with tempfile.TemporaryDirectory() as temp:

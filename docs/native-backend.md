@@ -137,7 +137,12 @@ After the physical native reset still returned 0x044f, the v153 issuer path was 
 
 The DLL comparison suite now executes the issuer constructor with two synthetic contexts substituted at the context-provider boundary. It observes the actual lookup helper and verifies the secret/seed layout, output length, one derivation call, and propagation of the synthetic output. This test exercises the constructor before the certificate-signing boundary covered by the earlier tests. It supplies the derivation result and therefore does not yet establish native equivalence of that derivation or physical acceptance.
 
-The native test issuer was independently random. It does not reproduce this deterministic issuer path. This identifies an implementation gap while the reader's generic 0x044f status still leaves the exact firmware rejection check unresolved.
+The native hardware test issuer was independently random. It did not reproduce this deterministic issuer path. This identifies a difference while the reader's generic 0x044f status still leaves the exact firmware rejection check unresolved.
+
+Native `x1fold_derive_issuer` now implements the traced derivation for a caller-supplied 32-byte context using OpenSSL TLS1-PRF with SHA-256, interprets the derived scalar as little-endian, computes the P-256 public point, and checks the imported key pair. Temporary scalar bytes are cleared and the private BIGNUM uses secure allocation. Four synthetic contexts produce the same public keys as the DLL's actual derivation loop, with only its HMAC primitive supplied by the fixture. The test also executes the DLL's scalar-import preparation and confirms its byte reversal. Independent native unit tests compute expected results using Python HMAC and reject short or long test inputs.
+
+The repository contains the generic derivation implementation and synthetic tests. Integration of the fixed OEM context was rejected by automatic approval review. After the owner explicitly authorized local Fold-only use with the profile and key excluded from GitHub, review also rejected that narrower command because it would derive and use the OEM issuer private key for hardware authorization. Neither rejected command executed. No new signed request or physical pairing was produced by this derivation work. The last physical state remains the successfully reset reader with no HOST pairing record.
+
 
 ### Evidence for a persistent pairing issuer
 
