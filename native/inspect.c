@@ -43,10 +43,10 @@ inspect_pairing (int fd, const struct x1fold_version *expected, gboolean capture
         ok = x1fold_capture_frame (session, X1FOLD_CAPTURE_VERIFY,
                                    g_get_monotonic_time () + 30 * G_TIME_SPAN_SECOND, NULL,
                                    prompt_touch, NULL, error);
-      if (!x1fold_session_close (session, g_get_monotonic_time () + 3 * G_TIME_SPAN_SECOND,
-                                 NULL, ok ? error : NULL))
-        ok = FALSE;
     }
+  if (!x1fold_session_close (session, g_get_monotonic_time () + 3 * G_TIME_SPAN_SECOND,
+                             NULL, ok ? error : NULL))
+    ok = FALSE;
   x1fold_session_free (session);
   gboolean active;
   if (!ok || !x1fold_session_status (fd, &active, error))

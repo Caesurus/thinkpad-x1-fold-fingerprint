@@ -4,11 +4,9 @@
 #include "worker.h"
 #include "sensor-certificate.h"
 #include <linux/hidraw.h>
-#include <openssl/x509.h>
 #include <stdarg.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 static gboolean signal_wait;
@@ -22,20 +20,6 @@ __wrap_x1fold_read_notification (int fd, gint64 deadline, GCancellable *cancel, 
   return __real_x1fold_read_notification (fd, deadline, cancel, error);
 }
 
-gboolean
-__wrap_x1fold_check_fd (int fd, dev_t expected, GError **error)
-{
-  struct stat st;
-  return fstat (fd, &st) == 0 && S_ISSOCK (st.st_mode);
-}
-
-gboolean
-__wrap_x1fold_session_status (int fd, gboolean *active, GError **error)
-{
-  *active = FALSE;
-  return TRUE;
-}
-
 int
 __wrap_ioctl (int fd, unsigned long op, ...)
 {
@@ -45,16 +29,6 @@ __wrap_ioctl (int fd, unsigned long op, ...)
   const void *report = va_arg (args, void *);
   va_end (args);
   return write (fd, report, 20);
-}
-
-EVP_PKEY *
-__wrap_x1fold_sensor_public_key (const struct x1fold_version *version, const guint8 *cert,
-                                 gsize size, GError **error)
-{
-  g_assert_cmpuint (size, ==, 400);
-  g_assert_cmpmem (cert, 4, "TEST", 4);
-  const guint8 *der = cert + 4;
-  return d2i_PUBKEY (NULL, &der, size - 4);
 }
 
 int

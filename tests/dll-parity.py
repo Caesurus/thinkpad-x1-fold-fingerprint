@@ -97,6 +97,30 @@ def hid_guest(folder):
     return guest
 
 
+def check_pair_command(folder, request, transport_status):
+    guest = hid_guest(folder)
+    unit = guest.alloc(bytes(32))
+    # Distinct stand-ins make swapped or truncated certificate records visible.
+    records = bytes([0x48]) * 400 + bytes([0x53]) * 400
+    untouched = bytes([0xcd]) * len(records)
+    output = guest.alloc(untouched)
+
+    def exchange(context, opcode, outbound, inbound):
+        assert context == unit and opcode == 0x93
+        length, = struct.unpack("<I", guest.read(outbound, 4))
+        assert guest.read(guest.u64(outbound + 8), length) == bytes([opcode]) + request
+        assert guest.read(inbound, 4) == struct.pack("<I", 802)
+        if transport_status == 0:
+            guest.put64(inbound + 8, guest.alloc(bytes(2) + records))
+        return transport_status
+
+    guest.service(0x897d0, exchange)
+    guest.service(0x61c70, lambda *_: 0)  # Guest arena owns the allocations.
+    status = guest.call(0x90040, unit, guest.alloc(request), output)
+    assert guest.mock_calls.get(guest.base + 0x897d0) == 1 and status == transport_status
+    assert guest.read(output, len(records)) == (untouched if transport_status else records)
+
+
 def test_request(folder, build):
     registration = runpy.run_path(str(NATIVE / "test-register.py"))
     issuer = ec.generate_private_key(ec.SECP256R1())
@@ -122,6 +146,9 @@ def test_request(folder, build):
             assert len(request) == 400 and request[:142] == dll_body
             n = int.from_bytes(request[142:144], "little")
             issuer.public_key().verify(request[144:144+n], dll_body, ec.ECDSA(hashes.SHA256()))
+        for status in (0, 0x403):
+            check_pair_command(folder, request, status)
+    print("6 simulated PAIR transfers checked using native requests and the HID DLL", flush=True)
     print("3 host request bodies matched the HID DLL at its signing boundary", flush=True)
 
 

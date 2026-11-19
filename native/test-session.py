@@ -352,6 +352,11 @@ def reader(sock, mode, worker_keys=None, client=None, quality=None, match_reply=
     start = capture(sock, keys, mode) if mode.startswith("capture-") else 1
     if mode.startswith(("verify-", "delete-", "enroll-")):
         start = print_operation(sock, keys, mode, client, quality, match_reply)
+    if mode.startswith("inspect-"):
+        assert open_record(command(sock), keys[:32], keys[64:68], start, 23) == b"\x01"
+        body = version if mode == "inspect-valid" else bytes(2)
+        respond(sock, send_record(23, body, keys[32:64], keys[68:], start))
+        start += 1
     previous = None
     probes = 0 if worker_keys else 2
     for i in range(probes):
@@ -372,7 +377,7 @@ def reader(sock, mode, worker_keys=None, client=None, quality=None, match_reply=
     respond(sock, send_record(21, alert, keys[32:64], keys[68:], start + probes))
 
 
-def run_worker(exe, mode, expected_events, *, quality=None, match_reply=None):
+def paired_fixture(files):
     sensor = ec.generate_private_key(ec.SECP256R1())
     identity = ec.generate_private_key(ec.SECP256R1())
     host = identity.public_key()
@@ -381,15 +386,43 @@ def run_worker(exe, mode, expected_events, *, quality=None, match_reply=None):
                  + public.y.to_bytes(68, "little") + bytes.fromhex("00022000")).ljust(400, b"\0")
     sensor_cert = b"TEST" + sensor.public_key().public_bytes(
         serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    (files / "x1fold-native.sensor.cert").write_bytes(sensor_cert.ljust(400, b"\0"))
+    (files / "x1fold-native.host.cert").write_bytes(host_cert)
+    (files / "x1fold-native.host-key.pem").write_bytes(identity.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    return sensor, host
+
+
+def run_inspect(exe, mode):
+    with tempfile.TemporaryDirectory() as directory:
+        files = Path(directory)
+        keys = paired_fixture(files)
+        sensor, hid = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        args = ["sh", "-ec", 'exec 3<&0 4<"$1" 5<"$2" 6<"$3"; exec "$4" --paired',
+                "inspect-peer", files / "x1fold-native.sensor.cert", files / "x1fold-native.host.cert",
+                files / "x1fold-native.host-key.pem", exe]
+        with sensor, hid, subprocess.Popen(args, stdin=hid, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
+            hid.close()
+            sensor.settimeout(4)
+            try:
+                reader(sensor, mode, keys)
+                out, err = proc.communicate(timeout=4)
+                if mode == "inspect-valid":
+                    assert proc.returncode == 0 and b"Verified paired session, closed" in out, err
+                else:
+                    assert proc.returncode == 1 and b"Invalid authenticated firmware response" in err, err
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+
+
+def run_worker(exe, mode, expected_events, *, quality=None, match_reply=None):
     op = {"enroll": 1, "verify": 2, "delete": 3}[mode.split("-")[0]]
     frame = (b"X1WB" + bytes([1, op, 0, 0]) + os.urandom(16) + b"\xb1".ljust(16, b"\0")
              + bytes([1, 2, 3, 4, 5, 6, 2, 0]))
     with tempfile.TemporaryDirectory() as directory:
         files = Path(directory)
-        (files / "x1fold-native.sensor.cert").write_bytes(sensor_cert.ljust(400, b"\0"))
-        (files / "x1fold-native.host.cert").write_bytes(host_cert)
-        (files / "x1fold-native.host-key.pem").write_bytes(identity.private_bytes(
-            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+        sensor, host = paired_fixture(files)
         if mode == "verify-missing-credential":
             (files / "x1fold-native.host-key.pem").unlink()
         sensor_sock, hid = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
@@ -451,7 +484,7 @@ if __name__ == "__main__":
     for case in cases:
         run(sys.argv[1], case)
     print(f"{len(cases)} native session and biometric scenarios passed")
-    if len(sys.argv) == 3:
+    if len(sys.argv) >= 3:
         workers = {"verify-match": [(4, 0)], "verify-match-extra": [(4, 0)], "verify-rejected": [(5, 0)],
                    "verify-low-quality": [(2, 0)], "verify-low-quality-close-failed": [(6, 0)],
                    "verify-other-finger": [(5, 0)], "verify-malformed-metric": [(6, 0)],
@@ -461,3 +494,7 @@ if __name__ == "__main__":
         for mode, events in workers.items():
             run_worker(sys.argv[2], mode, events)
         print(f"{len(workers)} native worker transactions passed")
+    if len(sys.argv) >= 4:
+        for mode in ("inspect-valid", "inspect-invalid-version"):
+            run_inspect(sys.argv[3], mode)
+        print("2 paired diagnostic close checks passed")
