@@ -66,7 +66,7 @@ As a regression check, the pre-fix native worker at `147a88f` returned a worker 
 
 ## Pairing credentials and the hardware test
 
-In the Fold v153 HID DLL, `tudorSecurityDoPair` generates the host key pair and prepares the public host certificate before selecting basic or advanced pairing. A static trace from `_tudorSecurityPreparePairingParams` through two direct calls reaches a helper that calls `BCryptImportKeyPair`, `BCryptSignHash` and `BCryptDestroyKey` in that order. The import writes its output handle to a stack slot. The signing and destruction calls both read their key handle from that same slot. This identifies the signer as a key the driver supplies to Windows in memory. The trace establishes the handle's lifetime. The origin of the imported issuer credential on this Fold remains unverified. [Windows key import](https://learn.microsoft.com/en-us/windows/win32/api/bcrypt/nf-bcrypt-bcryptimportkeypair) · [Windows signing API](https://learn.microsoft.com/en-us/windows/win32/api/bcrypt/nf-bcrypt-bcryptsignhash)
+In the Fold v153 HID DLL, `tudorSecurityDoPair` generates the host key pair and prepares the public host certificate before selecting basic or advanced pairing. A static trace from `_tudorSecurityPreparePairingParams` through two direct calls reaches a helper that calls `BCryptImportKeyPair`, `BCryptSignHash` and `BCryptDestroyKey` in that order. The import writes its output handle to a stack slot. The signing and destruction calls both read their key handle from that same slot. This identifies the signer as a key the driver supplies to Windows in memory. The trace establishes the handle's lifetime. Further tracing identifies a deterministic local derivation before the private-key import, described below. [Windows key import](https://learn.microsoft.com/en-us/windows/win32/api/bcrypt/nf-bcrypt-bcryptimportkeypair) · [Windows signing API](https://learn.microsoft.com/en-us/windows/win32/api/bcrypt/nf-bcrypt-bcryptsignhash)
 
 The host key identifies the installation on later reconnects. On related hardware, recorded requests from three different host keys all verify under a single separate issuer, as detailed below. Identifying that issuer on the related reader does not establish which issuer this Fold accepts.
 
@@ -130,6 +130,14 @@ Skipping the SSFS/HOST reset cannot by itself explain the earlier refusal. The n
 A separate physical read after the reset confirmed that HOST contains no pairing record. Firmware remained 10.1 build 3654703, product 0x41, interface 0x03, provisioning 3 and security flags 0xa10b. Thus the reset removed the stored pairing while the reader continued to reject the locally issued request.
 
 The registration tool's final “HOST pairing record present” diagnostic reports its pre-reset observation. The wrapper ran the formats after that observation. The physical trace is retained locally at /tmp/fold-native-reset-test/physical.log, alongside the test source and saved request. Private keys and the state directory are excluded from the repository.
+
+### Fold issuer construction
+
+After the physical native reset still returned 0x044f, the v153 issuer path was traced further. The certificate-signing routine calls a local issuer constructor before importing the resulting scalar. Four leaf helpers each write eight fixed context bytes, with no external calls. A separate lookup supplies a fixed two-byte value. The constructor passes the first half of the context as the derivation secret and the remaining half plus the lookup value as its seed, alongside a fixed label. The software derivation branch implements a TLS-style HMAC expansion, with the pairing call selecting its 32-byte hash mode. These observations describe the exact Fold DLL.
+
+The DLL comparison suite now executes the issuer constructor with two synthetic contexts substituted at the context-provider boundary. It observes the actual lookup helper and verifies the secret/seed layout, output length, one derivation call, and propagation of the synthetic output. This test exercises the constructor before the certificate-signing boundary covered by the earlier tests. It supplies the derivation result and therefore does not yet establish native equivalence of that derivation or physical acceptance.
+
+The native test issuer was independently random. It does not reproduce this deterministic issuer path. This identifies an implementation gap while the reader's generic 0x044f status still leaves the exact firmware rejection check unresolved.
 
 ### Evidence for a persistent pairing issuer
 

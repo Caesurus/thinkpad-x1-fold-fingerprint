@@ -97,6 +97,48 @@ def hid_guest(folder):
     return guest
 
 
+def test_issuer_source(folder, build):
+    # Replace the DLL's embedded issuer context with synthetic bytes. Observe
+    # the derivation inputs without extracting or printing an OEM private key.
+    for context in (bytes(range(32)), bytes(reversed(range(32)))):
+        guest = hid_guest(folder)
+        guest.put64(guest.base + 0x157a88, 0)
+        guest.service(0x61c70, lambda *_: 0)
+        guest.service(0x61c90, lambda dest, value, size, *_:
+                      guest.cpu.mem_write(dest, bytes([value & 255]) * size))
+        guest.service(0x61cd0, lambda dest, src, size, *_:
+                      guest.cpu.mem_write(dest, guest.read(src, size)))
+        guest.service(0x3a5b0, lambda *_: None)
+
+        def supply_context(descriptor, *_):
+            assert guest.read(descriptor, 4) == struct.pack("<I", 32)
+            guest.cpu.mem_write(guest.u64(descriptor + 8), context)
+            return 0
+
+        expected = bytes(range(32, 64))
+
+        def observe_derivation(secret, label, seed, output_size):
+            assert guest.read(secret, 4) == struct.pack("<I", 16)
+            assert guest.read(guest.u64(secret + 8), 16) == context[:16]
+            assert guest.read(seed, 4) == struct.pack("<I", 18)
+            assert guest.read(guest.u64(seed + 8), 18) == context[16:] + b"\xaa\xaa"
+            assert label == guest.base + 0x155f98
+            assert output_size == 32
+            frame = guest.cpu.reg_read(UC_X86_REG_RSP)
+            guest.cpu.mem_write(guest.u64(frame + 40), expected)
+            return 0
+
+        guest.service(0x6e4a0, supply_context)
+        guest.service(0x73fa0, observe_derivation)
+        output = guest.alloc(bytes(32))
+        descriptor = guest.alloc(struct.pack("<IIQ", 32, 0, output))
+        assert guest.call(0x6e6c0, descriptor) == 0
+        assert guest.read(output, 32) == expected
+        assert guest.mock_calls[guest.base + 0x6e4a0] == 1
+        assert guest.mock_calls[guest.base + 0x73fa0] == 1
+    print("2 synthetic issuer contexts followed the DLL's derivation input layout", flush=True)
+
+
 def test_pair_status(folder, build):
     # These are the two routines that the HID transport invokes on the first
     # reply word. 0x7fff exercises the default branch of the v153 converter.
@@ -348,5 +390,5 @@ if __name__ == "__main__":
     parser.add_argument("dll_directory", type=Path)
     parser.add_argument("build_directory", type=Path)
     args = parser.parse_args()
-    for test in (test_request, test_pair_status, test_storage, test_verify):
+    for test in (test_issuer_source, test_request, test_pair_status, test_storage, test_verify):
         test(args.dll_directory, args.build_directory.resolve())
