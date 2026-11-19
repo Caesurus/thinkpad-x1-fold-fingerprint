@@ -58,4 +58,13 @@ if install_state_restore "$root" "$backup" 2>/dev/null; then
 fi
 test "$(cat "$worker")" = 'current worker' || fail 'partial restore on invalid snapshot'
 
+# A special file cannot be restored as a driver file, so refuse it up front.
+rm -rf -- "$backup"
+rm -- "$worker"
+mkfifo "$worker"
+if install_state_snapshot "$root" "$backup" 2>/dev/null; then
+    fail 'accepted FIFO destination'
+fi
+test -p "$worker" || fail 'changed FIFO destination'
+
 echo 'Install snapshot and restore tests passed'

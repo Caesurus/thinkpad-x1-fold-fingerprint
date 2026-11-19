@@ -25,17 +25,21 @@ install_state_snapshot() {
             return 1
         fi
         if [ -e "$snapshot_source" ] || [ -L "$snapshot_source" ]; then
+            if [ ! -f "$snapshot_source" ] && [ ! -L "$snapshot_source" ]; then
+                echo "Installation destination is not a regular file or symlink: $snapshot_path" >&2
+                return 1
+            fi
             cp -a -- "$snapshot_source" "$snapshot_dir/$snapshot_index.entry" || return 1
-            : > "$snapshot_dir/$snapshot_index.present"
+            : > "$snapshot_dir/$snapshot_index.present" || return 1
         else
-            : > "$snapshot_dir/$snapshot_index.absent"
+            : > "$snapshot_dir/$snapshot_index.absent" || return 1
         fi
     done <<EOF
 $(install_state_paths)
 EOF
 }
 
-install_state_restore() {
+install_state_validate() {
     restore_root=$1 restore_dir=$2
     [ -d "$restore_dir" ] && [ ! -L "$restore_dir" ] || return 1
     restore_index=0
@@ -60,6 +64,11 @@ install_state_restore() {
     done <<EOF
 $(install_state_paths)
 EOF
+}
+
+install_state_restore() {
+    install_state_validate "$1" "$2" || return 1
+    restore_root=$1 restore_dir=$2
 
     restore_index=0
     while IFS= read -r restore_path; do

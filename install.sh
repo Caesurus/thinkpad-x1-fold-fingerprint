@@ -39,17 +39,22 @@ restore_snapshot() {
         0:0|0:1|1:0|1:1) ;;
         *) echo 'Invalid socket state in installation backup' >&2; return 1 ;;
     esac
+    install_state_validate "$root" "$saved/files" || return 1
+    # Disable and stop the installed unit before restoring files: on a
+    # first-install rollback there is no unit file left afterward.
+    if systemctl is-active x1fold-fingerprint.socket >/dev/null 2>&1; then
+        systemctl stop x1fold-fingerprint.socket || return 1
+    fi
+    if systemctl is-enabled x1fold-fingerprint.socket >/dev/null 2>&1; then
+        systemctl disable x1fold-fingerprint.socket || return 1
+    fi
     install_state_restore "$root" "$saved/files" || return 1
     systemctl daemon-reload || return 1
     if [ "$prior_enabled" = 1 ]; then
         systemctl enable x1fold-fingerprint.socket || return 1
-    else
-        systemctl disable x1fold-fingerprint.socket || return 1
     fi
     if [ "$prior_active" = 1 ]; then
         systemctl start x1fold-fingerprint.socket || return 1
-    else
-        systemctl stop x1fold-fingerprint.socket || return 1
     fi
     systemctl try-restart fprintd.service
 }
@@ -77,10 +82,10 @@ done
 # Rename each completed file into place so active processes retain their mapped ELF.
 copy_file() (
     dest=$root$3
-    mkdir -p "$(dirname "$dest")"
-    temporary=$(mktemp "$dest.XXXXXXXX")
+    mkdir -p "$(dirname "$dest")" || exit 1
+    temporary=$(mktemp "$dest.XXXXXXXX") || exit 1
     trap 'rm -f -- "$temporary"' EXIT
-    install -m "$1" "$2" "$temporary"
+    install -m "$1" "$2" "$temporary" || exit 1
     mv -T -- "$temporary" "$dest"
 )
 

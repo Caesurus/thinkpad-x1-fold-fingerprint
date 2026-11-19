@@ -4,7 +4,7 @@ This guide covers the tested ThinkPad X1 Fold 16 Gen 1 keyboard (`17ef:6142`, fi
 
 ## Check pairing before installing
 
-The public repository contains a complete native fingerprint runtime, but it does **not** contain the private Fold issuer profile. A new, unpaired reader cannot be provisioned from this repository alone. If this Linux installation lacks the three credentials below, the driver can discover the reader but cannot authenticate a scan. Keep password unlock available until a paired installation has been verified.
+This repository contains a complete native fingerprint runtime, but it does **not** contain the private Fold issuer profile. A new, unpaired reader cannot be provisioned from this repository alone. If this Linux installation lacks the three credentials below, the driver can discover the reader but cannot authenticate a scan. Keep password unlock available until a paired installation has been verified.
 
 | Systemd credential name | Required value |
 | --- | --- |
@@ -46,7 +46,7 @@ systemctl is-active x1fold-fingerprint.socket
 fprintd-list "$USER"
 ```
 
-The installer takes a root-only snapshot under `/var/lib/x1fold-fingerprint/install-backups/` before changing its four runtime files or removing retired launchers. It records the socket's prior enabled and active state. If activation fails, it restores those files and states. The successful snapshot is selected by `latest`. The installer does not back up, replace or remove the pairing drop-in, encrypted credentials, PAM configuration, or on-sensor enrollments.
+The installer takes a root-only snapshot under `/var/lib/x1fold-fingerprint/install-backups/` before changing its four runtime files or removing retired launchers. It records the socket's prior enabled and active state. If activation fails, it attempts to restore those files and states; if restoration also fails, it reports the retained snapshot path for recovery. The successful snapshot is selected by `latest`. The installer does not back up, replace or remove the pairing drop-in, encrypted credentials, PAM configuration, or on-sensor enrollments.
 
 If `fprintd-list` shows an enrolled finger, verify it with `fprintd-verify -f right-index-finger` (replace the finger name as needed). Touch the reader after the command reports that verification started. A successful scan prints `verify-match`. To test KDE, lock the desktop only after password unlock is available, then use the enrolled finger.
 
