@@ -462,6 +462,7 @@ def check_registration(register, inspect):
                                                     serialization.NoEncryption()))
         for name, response, message in (
             ("refused", bytes.fromhex("0304"), b"Reader refused registration"),
+            ("fold-refused", bytes.fromhex("4f04"), b"Reader refused registration\nReader declined host registration (0x044f)"),
             ("truncated", accepted[:-1], b"Registration outcome unknown"),
             ("accepted", accepted, b"Reader accepted registration"),
         ):
