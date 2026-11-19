@@ -58,6 +58,8 @@ sudo ./install.sh --rollback
 
 This restores the files and socket state from the most recent successful install. It can be run again without changing the result. If this was the first installation, rollback removes the newly installed module, worker and units. It does not undo sensor enrollment or pairing. Keep this repository checkout until you are satisfied that the upgrade works, because the rollback command is in `install.sh`.
 
+On the tested Fold, a live install followed by `--rollback` completed successfully. The original worker hash matched after rollback, the socket was still enabled and active, and fprintd still listed the right index. This tests the upgrade-and-restore path on one already-paired machine; the temporary-root suite covers the first-install case without changing a reader.
+
 ## Preserve pairing for recovery
 
 The installer preserves installed pairing credentials but does not make a portable backup of them. Before replacing the OS, save the original host private key and accepted 802-byte registration response in a protected, encrypted backup. They are needed to regenerate the machine-encrypted service configuration using `native-register service-config`. Never commit these files or the issuer profile to Git.
