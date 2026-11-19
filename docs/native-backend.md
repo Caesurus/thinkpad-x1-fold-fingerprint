@@ -127,6 +127,8 @@ The previous attempt retained its host and issuer keys but no request file. This
 
 Skipping the SSFS/HOST reset cannot by itself explain the earlier refusal. The native request still used a local issuer whose acceptance by this firmware is unproven. The successful DLL log omitted certificate bytes, and its logging could omit other command categories. Thus the result narrows the investigation to request signing and other startup differences without proving which firmware check produced 0x044f.
 
+A separate physical read after the reset confirmed that HOST contains no pairing record. Firmware remained 10.1 build 3654703, product 0x41, interface 0x03, provisioning 3 and security flags 0xa10b. Thus the reset removed the stored pairing while the reader continued to reject the locally issued request.
+
 The registration tool's final “HOST pairing record present” diagnostic reports its pre-reset observation. The wrapper ran the formats after that observation. The physical trace is retained locally at /tmp/fold-native-reset-test/physical.log, alongside the test source and saved request. Private keys and the state directory are excluded from the repository.
 
 ### Evidence for a persistent pairing issuer
