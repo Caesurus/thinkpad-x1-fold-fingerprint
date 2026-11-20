@@ -1,49 +1,76 @@
-# ThinkPad X1 Fold keyboard fingerprint reader for Linux
+# Fingerprint unlock for the ThinkPad X1 Fold
 
-This driver lets KDE and `fprintd` enroll and verify fingers on the USB-connected detachable keyboard for the **ThinkPad X1 Fold 16 Gen 1**. The keyboard is USB `17ef:6142`. Its Synaptics fingerprint reader uses vendor HID interface 04. Lenovo also identifies its biometric child as `06cb:00dd`.
+This Linux driver lets `fprintd` and KDE use the fingerprint reader in the **ThinkPad X1 Fold 16 Gen 1** detachable keyboard. It targets USB `17ef:6142`, fingerprint HID interface 04.
 
-The tested system ran **Ubuntu 26.04.1 on x86-64**, Ubuntu's libfprint 1.95.1 TOD interface, and fprintd 1.94.5.
+The driver was tested on Ubuntu 26.04.1 x86-64. On one physical Fold, a right-index print enrolled and unlocked KDE. Verification also worked after USB reconnect, suspend, and reboot. [Test details](docs/native-backend.md)
 
-The default build on `native-backend` produces a native Linux worker and libfprint plugin. On the physical Fold, this worker enrolled the right index, matched it, rejected a right-middle touch, recovered from cancellation without a keyboard reset, enrolled and deleted a temporary right-middle print, and matched the right index afterward. The owner confirmed a right-index KDE unlock. [Architecture diagrams and verification status](docs/native-backend.md)
+## The earlier synaTudor approach
 
-## Native build and staged installation
+[synaTudor](https://github.com/Popax21/synaTudor) makes Synaptics Windows fingerprint drivers usable on Linux. It runs the vendor's driver logic instead of replacing it. The [06cb:00fd port](https://github.com/Manasi-ish/synaptics-06cb-00fd-linux) is one example for a **different reader**. This Fold project also used synaTudor in an [earlier worker](https://github.com/Caesurus/thinkpad-x1-fold-fingerprint/blob/5b204212cb0f608acdbf476ac00b9ef4356cb704/vendor-host/build_worker.py). Its build took pinned synaTudor C sources and extracted Lenovo's `synaFpAdapter153.dll` and `synaWudfBioHid153.dll` from the Fold driver package. It embedded the DLLs in a Linux executable.
 
-On Ubuntu amd64 the build uses a C toolchain, pkg-config, Linux HID headers, OpenSSL 3, GLib/GIO, libgudev and the libfprint TOD development packages. The tests also use Python cryptography, PyGObject and umockdev. Run from the repository root with those dependencies installed.
+At unlock time, that executable ran the Windows driver code through synaTudor's relinker. Its compatibility layer supplied the Windows and WDF functions the DLLs expected. The driver code then talked to the Fold reader. The diagram shows the logical path; the relinker and DLL code lived inside the legacy worker.
+
+```mermaid
+flowchart LR
+    KDE[KDE lock screen] --> F[fprintd]
+    F --> P[libfprint plugin]
+    P -->|Local socket| W[Legacy Linux worker]
+    W --> T[synaTudor relinker and Windows API layer]
+    T --> D[Lenovo adapter and HID DLL code]
+    D -->|USB| R[Fold fingerprint reader]
+```
+
+That approach made the reader usable and gave this project a working reference. It also required the synaTudor source checkout and Lenovo's proprietary DLLs to build, and it executed those DLLs for each fingerprint operation.
+
+## The native approach here
+
+Both designs use a Linux worker. In this one, C code in this repository handles the Fold's pairing, encrypted connection, enrollment, matching, and deletion. That code is compiled into the worker. A separate native setup tool uses it for first-time pairing. Neither tool loads a Windows DLL.
+
+```mermaid
+flowchart LR
+    KDE[KDE lock screen] --> F[fprintd]
+    F --> P[libfprint plugin]
+    P -->|Local socket| W[Native Linux worker]
+    C[Encrypted pairing credentials] --> W
+    W --> N[Native C protocol code]
+    N -->|USB| R[Fold fingerprint reader]
+```
+
+The main improvement is a smaller dependency chain. The normal build needs this repository and Linux development packages; it no longer needs a synaTudor checkout or the Lenovo driver package. The runtime avoids Windows API emulation, and its protocol code can be tested and reviewed here. `make check-dll` can still compare against extracted DLLs offline, but installation and unlock do not use them. Hardware support remains focused on this Fold.
+
+## Set up
+
+[Install the build packages](docs/install-and-recovery.md#build-and-test), then run these commands from the repository directory:
 
 ```sh
 make
 make check
-stage=$(mktemp -d)
-DESTDIR="$stage" ./install.sh
+sudo ./install.sh
 ```
 
-To compare the native code directly with the extracted vendor DLLs without a reader, run `make check-dll DLL_DIR='/path/to/extracted/package'`. [Test dependencies and coverage](docs/native-backend.md#offline-dll-differential-tests)
+If this Linux installation has no pairing credentials, follow the [first-time pairing guide](docs/install-and-recovery.md#first-time-pairing) before enrolling. That procedure clears the reader's saved pairing and fingerprints, including Windows Hello.
 
-The stage contains the TOD plugin, the native worker, the systemd socket and its service template. The static library is linked into the worker. These commands build and stage offline. A staged installation does not contact systemd or the keyboard.
+```mermaid
+flowchart TD
+    A[Build and install the driver] --> B{Linux pairing available?}
+    B -- Yes --> E[Enroll and verify a finger]
+    B -- No --> C[Create a private host key]
+    C --> D[Clear old data and pair the reader]
+    D --> F[Install encrypted credentials]
+    F --> E
+```
 
-To activate the native backend on the target machine, run `sudo ./install.sh`. It replaces the installed libfprint module and service, reloads systemd, and retires any legacy worker and Python launchers. It leaves PAM, fingerprint enrollments and credential stores in place. A desktop with password unlock can run this backend before the pairing credentials are available. Fingerprint operations then return an error until a usable pairing is present.
+Once paired, enroll and test a finger:
 
-For fingerprint operations systemd loads these three credentials from the system credential store. Use the same name for the encrypted file and its bound credential name under `/etc/credstore.encrypted/`.
+```sh
+fprintd-enroll -f right-index-finger
+fprintd-verify -f right-index-finger
+```
 
-| Credential name | Contents |
-| --- | --- |
-| `x1fold-native.sensor.cert` | Reader's 400-byte signed sensor certificate |
-| `x1fold-native.host.cert` | Reader's 400-byte returned host certificate |
-| `x1fold-native.host-key.pem` | Corresponding host P-256 private key in PEM format |
+First-time setup uses fixed issuer data recovered from Lenovo's Fold v153 DLL. Each owner creates a **new private host key**, while the issuer data is shared. The native request was accepted by the tested Fold; a fresh reset and pairing on another physical Fold has not yet been tested.
 
-For a completed native registration, `native-register service-config` converts the saved response and matching owner key into a single encrypted systemd drop-in for these three credentials. [Installing a completed native pairing](docs/native-backend.md#installing-a-completed-native-pairing)
+The installed service receives the host key and certificates through systemd credentials. [Architecture and protocol notes](docs/native-backend.md)
 
-The optional `make native-register` tool constructs and signs the host request locally through OpenSSL. It can also send a registration to an explicitly selected reader. On November 19, 2026, this Fold accepted a native request signed through the locally reconstructed Fold issuer path. The saved certificates and host key opened authenticated native sessions before and after a physical USB reconnect. The issuer profile is kept outside this repository, so this result does not yet provide a distributable setup procedure for other readers. The installed native service uses encrypted credentials, and right-index enrollment and KDE unlock have now passed on this Fold. [Pairing implementation and evidence](docs/native-backend.md#pairing-credentials-and-the-hardware-test)
+To restore the previous driver files, run `sudo ./install.sh --rollback`. Rollback leaves sensor prints and pairing credentials in place. [Recovery steps](docs/install-and-recovery.md#roll-back-an-installation)
 
-## Components
-
-| Path | Purpose |
-| --- | --- |
-| `libfprint/` | Native TOD plugin that discovers the reader and connects fprintd to the worker. |
-| `native/` | Linux HID transport, pairing, encrypted session, capture, enrollment, verification, and deletion code. |
-| `service/native/` | Per-operation systemd worker service. |
-| `tests/` | DLL comparison and installation tests. |
-
-The normal build and installed runtime use Linux ELF files and this repository's C sources. They do not load Windows DLLs or fetch synaTudor. The optional `make check-dll` target uses locally supplied DLLs as offline test inputs; they are not included in the repository or installed runtime. The LGPL 2.1 license is in `LICENSES/`, and source files retain their SPDX notices.
-
-The local issuer profile used to pair this Fold is not distributed, so this repository does not yet provide a complete first-time provisioning procedure for other readers. Firmware update and recovery are separate maintenance work. [Hardware results and protocol analysis](docs/native-backend.md)
+Source is licensed under LGPL 2.1 or later; see [LICENSES](LICENSES). Firmware update support is outside this driver.
