@@ -48,19 +48,24 @@ make check
 sudo ./install.sh
 ```
 
-If this Linux installation has no pairing credentials, follow the [first-time pairing guide](docs/install-and-recovery.md#first-time-pairing) before enrolling. That procedure clears the reader's saved pairing and fingerprints, including Windows Hello.
+If this installation is already paired, you can verify an enrolled finger. If you reinstalled Linux and have a backup of the reader’s current pairing, restore it to keep your enrolled fingerprints. [Pairing recovery guide](docs/install-and-recovery.md#preserve-pairing-for-recovery)
+
+If you have neither a working pairing nor a matching backup, first-time pairing clears the reader’s previous pairing and enrolled fingerprints, including Windows Hello. [First-time pairing guide](docs/install-and-recovery.md#first-time-pairing)
 
 ```mermaid
 flowchart TD
     A[Build and install the driver] --> B{Linux pairing available?}
-    B -- Yes --> E[Enroll and verify a finger]
-    B -- No --> C[Create a private host key]
+    B -- Yes --> E[Verify a finger or enroll one first]
+    B -- No --> G{Matching pairing backup available?}
+    G -- Yes --> H[Restore pairing credentials]
+    H --> E
+    G -- No --> C[Create a private host key]
     C --> D[Clear old data and pair the reader]
     D --> F[Install encrypted credentials]
     F --> E
 ```
 
-Once paired, enroll and test a finger:
+Once paired, enroll a finger if needed, then verify it:
 
 ```sh
 fprintd-enroll -f right-index-finger
