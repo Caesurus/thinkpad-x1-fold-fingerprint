@@ -3,6 +3,7 @@
  * the host key on fd 4 and a separately configured local issuing provider.
  * A registration additionally needs an exclusively claimed reader on fd 3. */
 #include "credentials.h"
+#include "issuer.h"
 #include "pairing.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -17,6 +18,8 @@
 static EVP_PKEY *
 open_issuer (const char *uri, gboolean public_only)
 {
+  if (!strcmp (uri, "fold-v153:"))
+    return x1fold_fold_issuer (NULL);
   OSSL_STORE_CTX *store = OSSL_STORE_open (uri, UI_null (), NULL, NULL, NULL);
   if (!store)
     return NULL;
@@ -201,7 +204,8 @@ service_config (const char *flags, const char *path, gboolean user_scope)
 }
 
 static int
-run (const guint8 *serial, const char *issuer_uri, const char *request_path, const char *output)
+run (const guint8 *serial, const char *issuer_uri, const char *request_path, const char *output,
+     gboolean reset)
 {
   g_autoptr(GError) error = NULL;
   EVP_PKEY *host = x1fold_load_host_key_fd (4, &error);
@@ -236,6 +240,10 @@ run (const guint8 *serial, const char *issuer_uri, const char *request_path, con
     request = x1fold_create_host_request (host, issuer, &error);
   if (!request)
     goto done;
+  /* Check the complete request and owner key before reserving output or
+   * erasing either partition. The library checks again before PAIR. */
+  if (!x1fold_validate_host_request (request, host, issuer, &error))
+    goto done;
   if (serial)
     {
       int flags = fcntl (3, F_GETFL);
@@ -267,6 +275,14 @@ run (const guint8 *serial, const char *issuer_uri, const char *request_path, con
     {
       perror ("reserve pairing result");
       goto done;
+    }
+  if (reset)
+    {
+      if (!x1fold_format_pairing_storage (3, serial,
+                                         g_get_monotonic_time () + 15 * G_TIME_SPAN_SECOND,
+                                         NULL, &error))
+        goto done;
+      puts ("SSFS and HOST formatted; previous pairing and enrollments erased.");
     }
   X1FoldPairOutcome outcome = x1fold_register_host (3, serial, request, host, issuer, &returned, &sensor,
       g_get_monotonic_time () + 15 * G_TIME_SPAN_SECOND, NULL, &error);
@@ -305,15 +321,20 @@ main (int argc, char **argv)
   if ((argc == 4 || (argc == 5 && !strcmp (argv[4], "--user"))) && !strcmp (argv[1], "service-config"))
     return service_config (argv[2], argv[3], argc == 5);
   if (argc == 4 && !strcmp (argv[1], "request"))
-    return run (NULL, argv[2], NULL, argv[3]);
+    return run (NULL, argv[2], NULL, argv[3], FALSE);
   if (argc == 5 && !strcmp (argv[1], "register") && parse_serial (argv[2], serial) && geteuid () != 0)
-    return run (serial, argv[3], NULL, argv[4]);
+    return run (serial, argv[3], NULL, argv[4], FALSE);
   if (argc == 6 && !strcmp (argv[1], "register-signed") && parse_serial (argv[2], serial) && geteuid () != 0)
-    return run (serial, argv[3], argv[4], argv[5]);
+    return run (serial, argv[3], argv[4], argv[5], FALSE);
+  if (argc == 6 && !strcmp (argv[1], "reset-register") &&
+      parse_serial (argv[2], serial) && !strcmp (argv[5], "--erase-enrollments") && geteuid () != 0)
+    return run (serial, argv[3], NULL, argv[4], TRUE);
   fputs ("Usage: native-register request ISSUER-URI NEW-REQUEST\n"
          "       native-register register READER-SERIAL ISSUER-URI NEW-RESPONSE\n"
          "       native-register register-signed READER-SERIAL ISSUER-PUBLIC-URI SIGNED-REQUEST NEW-RESPONSE\n"
+         "       native-register reset-register READER-SERIAL ISSUER-URI NEW-RESPONSE --erase-enrollments\n"
          "       native-register service-config SECURITY-HEX SAVED-RESPONSE [--user]\n"
+         "Use fold-v153: as ISSUER-URI for the built-in Fold issuer.\n"
          "Supply the host signing key on fd 4. Registration requires an unprivileged process and reader fd 3.\n",
          stderr);
   return 2;

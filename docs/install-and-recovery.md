@@ -1,10 +1,10 @@
 # Install and recover the native Fold driver
 
-This guide covers the tested ThinkPad X1 Fold 16 Gen 1 keyboard (`17ef:6142`, fingerprint HID interface 04) on Ubuntu 26.04 amd64. It replaces a local libfprint TOD module and installs a systemd socket and worker. It does not change sensor firmware, reset ownership, delete prints, or change pairing credentials.
+This guide covers the tested ThinkPad X1 Fold 16 Gen 1 keyboard (`17ef:6142`, fingerprint HID interface 04) on Ubuntu 26.04 amd64. Installation replaces a local libfprint TOD module and installs a systemd socket and worker. The separate first-time pairing command below resets sensor storage when explicitly requested.
 
-## Check pairing before installing
+## Pairing credentials
 
-This repository contains a complete native fingerprint runtime, but it does **not** contain the private Fold issuer profile. A new, unpaired reader cannot be provisioned from this repository alone. If this Linux installation lacks the three credentials below, the driver can discover the reader but cannot authenticate a scan. Keep password unlock available until a paired installation has been verified.
+The Fold v153 issuer derivation context is included in the native source. Each first-time setup creates a new host P-256 key and obtains two reader certificates. The installed service needs these three credentials to authenticate scans. Keep password unlock available until pairing and enrollment have been verified.
 
 | Systemd credential name | Required value |
 | --- | --- |
@@ -12,7 +12,7 @@ This repository contains a complete native fingerprint runtime, but it does **no
 | `x1fold-native.host.cert` | Host's 400-byte returned certificate |
 | `x1fold-native.host-key.pem` | Matching host P-256 private key |
 
-The native library can derive an issuer from a locally supplied profile, and `native-register` accepts an issuer signing key through an OpenSSL URI or a separately signed request. Neither path executes Windows code. No general-purpose issuer distribution or second-reader provisioning test is available yet. See [pairing credentials and the hardware test](native-backend.md#pairing-credentials-and-the-hardware-test) for the exact interfaces and evidence.
+The built-in issuer is selected with `fold-v153:`. Its context is fixed across installations; formatting does not make a newly generated issuer trusted by this firmware. The native tool also accepts an OpenSSL issuer URI or a separately signed request. None of these paths executes Windows code. The built-in path was accepted on the tested Fold, while first-time provisioning on a second physical unit remains untested. See [pairing credentials and the hardware test](native-backend.md#pairing-credentials-and-the-hardware-test).
 
 ## Build and test
 
@@ -36,6 +36,43 @@ stage=$(mktemp -d)
 DESTDIR="$stage" ./install.sh
 find "$stage" -type f
 ```
+
+## First-time pairing
+
+Use this only when Linux has no usable pairing. `reset-register` formats SSFS and HOST, removing the existing pairing and enrolled fingerprints, including Windows Hello. The steps create a new host key and save the reader's response in a private directory. The tool refuses the wrong USB identity, serial, firmware profile, or an active session. Connect the keyboard by USB and complete the build above first.
+
+```sh
+umask 077
+state="${XDG_STATE_HOME:-$HOME/.local/state}/x1fold-fingerprint"
+mkdir -p -m 0700 "$state"
+test ! -e "$state/host-key.pem" && test ! -e "$state/pair-response.bin"
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:prime256v1 \
+  -out "$state/host-key.pem"
+sudo systemctl mask --runtime --now fprintd.service
+serial=$(sudo scripts/reader-fds.sh auto - ./build/native-inspect --serial)
+sudo scripts/reader-fds.sh auto "$state/host-key.pem" ./build/native-register \
+  reset-register "$serial" fold-v153: "$state/pair-response.bin" --erase-enrollments
+```
+
+The temporary service mask prevents D-Bus from starting fprintd while registration owns the reader. If registration fails, run `sudo systemctl unmask --runtime fprintd.service` and `sudo systemctl start fprintd.service`, then preserve the key, result file and error output for diagnosis. An `ffff` result marks an incomplete attempt; it cannot be used as a credential. Repeating setup requires a new output path and a check of the reader's current state.
+
+On success, read the firmware security flags with `sudo scripts/reader-fds.sh auto - ./build/native-inspect`; the tested Fold reported `a10b`. In an administrative shell from the repository root, set `state` to the same absolute directory created above, then install the encrypted credentials:
+
+```sh
+umask 077
+state=/home/USERNAME/.local/state/x1fold-fingerprint
+dir=/etc/systemd/system/x1fold-fingerprint@.service.d
+install -d -m 0700 "$dir"
+config=$(mktemp "$dir/.pairing-XXXXXXXX")
+./build/native-register service-config a10b "$state/pair-response.bin" \
+  4<"$state/host-key.pem" >"$config"
+mv -T -- "$config" "$dir/50-pairing.conf"
+systemctl daemon-reload
+systemctl unmask --runtime fprintd.service
+systemctl start fprintd.service
+```
+
+Replace `USERNAME` and `a10b` with this installation's values. Run `sudo ./install.sh` if the driver is not installed, then use `fprintd-enroll -f right-index-finger` and `fprintd-verify -f right-index-finger`. Keep a protected backup of the original key and response for OS recovery. The native request paired the tested Fold and reconnected successfully; the exact reset-and-register command has passed a software-reader test but has not yet provisioned a second physical Fold.
 
 ## Install and verify
 
@@ -62,7 +99,7 @@ On the tested Fold, a live install followed by `--rollback` completed successful
 
 ## Preserve pairing for recovery
 
-The installer preserves installed pairing credentials but does not make a portable backup of them. Before replacing the OS, save the original host private key and accepted 802-byte registration response in a protected, encrypted backup. They are needed to regenerate the machine-encrypted service configuration using `native-register service-config`. Never commit these files or the issuer profile to Git.
+The installer preserves installed pairing credentials but does not make a portable backup of them. Before replacing the OS, save the original host private key and accepted 802-byte registration response in a protected, encrypted backup. They are needed to regenerate the machine-encrypted service configuration using `native-register service-config`. Never commit the owner key or pairing response to Git. The fixed issuer context is already in this repository's native source.
 
 For recovery on the **same OS installation**, also copy the service's encrypted drop-ins into a root-only backup:
 

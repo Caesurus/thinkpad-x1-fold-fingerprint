@@ -48,24 +48,31 @@ make check
 sudo ./install.sh
 ```
 
-The worker needs a saved Linux pairing to open an encrypted connection to the reader. If you already have a pairing backup, follow the [recovery guide](docs/install-and-recovery.md#preserve-pairing-for-recovery). First-time pairing on a fresh reader requires an issuer credential supplied separately.
+If this installation is already paired, you can verify an enrolled finger. If you reinstalled Linux and have a backup of the reader’s current pairing, restore it to keep your enrolled fingerprints. [Pairing recovery guide](docs/install-and-recovery.md#preserve-pairing-for-recovery)
+
+If you have neither a working pairing nor a matching backup, first-time pairing clears the reader’s previous pairing and enrolled fingerprints, including Windows Hello. [First-time pairing guide](docs/install-and-recovery.md#first-time-pairing)
 
 ```mermaid
 flowchart TD
     A[Build and install the driver] --> B{Linux pairing available?}
-    B -- Yes --> E[Enroll and verify a finger]
-    B -- No --> C{Pairing backup available?}
-    C -- Yes --> D[Restore credentials]
-    D --> E
-    C -- No --> F[Obtain a pairing credential before enrolling]
+    B -- Yes --> E[Verify a finger or enroll one first]
+    B -- No --> G{Matching pairing backup available?}
+    G -- Yes --> H[Restore pairing credentials]
+    H --> E
+    G -- No --> C[Create a private host key]
+    C --> D[Clear old data and pair the reader]
+    D --> F[Install encrypted credentials]
+    F --> E
 ```
 
-Once paired, enroll and test a finger:
+Once paired, enroll a finger if needed, then verify it:
 
 ```sh
 fprintd-enroll -f right-index-finger
 fprintd-verify -f right-index-finger
 ```
+
+First-time setup uses fixed issuer data recovered from Lenovo's Fold v153 DLL. Each owner creates a **new private host key**, while the issuer data is shared. The native request was accepted by the tested Fold; a fresh reset and pairing on another physical Fold has not yet been tested.
 
 The installed service receives the host key and certificates through systemd credentials. [Architecture and protocol notes](docs/native-backend.md)
 
